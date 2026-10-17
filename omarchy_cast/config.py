@@ -13,7 +13,6 @@ DEFAULTS = {
     "display_name": None,
     "port": DEFAULT_PORT,
     "auth": "anonymous",
-    "accept": True,
     "lan_only": True,
     "set_default": True,
     "move_streams": True,
