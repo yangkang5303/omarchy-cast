@@ -21,6 +21,14 @@ Omarchy Cast turns any PipeWire host on your LAN into a selectable audio output 
 - An Omarchy bar widget (shell plugin) as a thin front end over the CLI
 - No configuration files to hand-edit
 
+### Screenshots
+
+Omarchy bar widget (left-click the speaker icon) and the standalone GTK4 panel:
+
+| Bar widget | Desktop panel |
+|------------|---------------|
+| ![Audio Cast bar widget](docs/bar-widget.png) | ![Omarchy Cast desktop panel](docs/app-panel.png) |
+
 ### How it works
 
 ```
@@ -204,6 +212,14 @@ Omarchy Cast 能把局域网内任意一台 PipeWire 主机变成另一台主机
 - 提供命令行工具与 GTK4 图形面板
 - 提供 Omarchy 状态栏小组件（shell 插件），作为命令行工具的轻量前端
 - 无需手工编辑配置文件
+
+### 截图
+
+Omarchy 状态栏小组件（左键点击喇叭图标）与独立的 GTK4 面板：
+
+| 状态栏小组件 | 桌面面板 |
+|--------------|----------|
+| ![Audio Cast 状态栏小组件](docs/bar-widget.png) | ![Omarchy Cast 桌面面板](docs/app-panel.png) |
 
 ### 工作原理
 
