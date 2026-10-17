@@ -17,7 +17,7 @@ def _parse_txt(raw):
 
 def discover(timeout=6):
     proc = util.run(
-        ["avahi-browse", "-rtp", SERVICE_TYPE],
+        ["avahi-browse", "-rtpl", SERVICE_TYPE],
         timeout=timeout,
         check=False,
     )
