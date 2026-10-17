@@ -18,6 +18,7 @@ Omarchy Cast turns any PipeWire host on your LAN into a selectable audio output 
 - Low latency (~1–3 ms on a wired LAN)
 - mDNS auto-discovery — no IP addresses to remember
 - CLI plus a GTK4 graphical panel
+- An Omarchy bar widget (shell plugin) as a thin front end over the CLI
 - No configuration files to hand-edit
 
 ### How it works
@@ -126,6 +127,24 @@ Keybinding — add to `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + ALT + C", "Audio Cast", "uwsm-app -- \"$HOME/.local/bin/omarchy-cast\" gui")
 ```
 
+### Omarchy shell plugin
+
+This repository doubles as an [Omarchy shell plugin](https://plugins.omarchy.org/) that puts an **Audio Cast** icon in your bar. It is a thin front end over the CLI: it runs `omarchy-cast list --json` to discover hosts, `connect`/`disconnect` to route audio, and `enable-receiver`/`disable-receiver` to toggle receiving. Install the CLI first (see [Install](#install)); the widget shows a hint when `omarchy-cast` is missing.
+
+```bash
+omarchy plugin add https://github.com/yangkang5303/omarchy-cast.git --enable
+# or, if already added:
+omarchy plugin enable yangkang5303.audio-cast --section right
+```
+
+- Left-click the speaker icon to open the panel; right-click to launch the GTK4 app.
+- The panel lists discovered hosts (click to connect/disconnect), a switch to receive audio on this host, a scan button (or press `r`), and a "disconnect all" action.
+
+```bash
+omarchy plugin disable yangkang5303.audio-cast
+omarchy plugin remove yangkang5303.audio-cast
+```
+
 ### Configuration
 
 `~/.config/omarchy-cast/config.json`
@@ -183,6 +202,7 @@ Omarchy Cast 能把局域网内任意一台 PipeWire 主机变成另一台主机
 - 低延迟（有线局域网约 1–3 ms）
 - mDNS 自动发现，无需记 IP
 - 提供命令行工具与 GTK4 图形面板
+- 提供 Omarchy 状态栏小组件（shell 插件），作为命令行工具的轻量前端
 - 无需手工编辑配置文件
 
 ### 工作原理
@@ -289,6 +309,24 @@ omarchy-cast gui
 
 ```lua
 o.bind("SUPER + ALT + C", "Audio Cast", "uwsm-app -- \"$HOME/.local/bin/omarchy-cast\" gui")
+```
+
+### Omarchy 状态栏插件
+
+本仓库同时是一个 [Omarchy shell 插件](https://plugins.omarchy.org/)，会在状态栏放置一个 **Audio Cast** 图标。它是命令行工具的轻量前端：调用 `omarchy-cast list --json` 发现主机、用 `connect`/`disconnect` 投送或停止音频、用 `enable-receiver`/`disable-receiver` 开关本机接收。请先安装命令行工具（见[安装](#安装-1)）；若缺少 `omarchy-cast`，组件会给出提示。
+
+```bash
+omarchy plugin add https://github.com/yangkang5303/omarchy-cast.git --enable
+# 或已添加过插件时：
+omarchy plugin enable yangkang5303.audio-cast --section right
+```
+
+- 左键点击喇叭图标打开面板；右键启动 GTK4 图形界面。
+- 面板列出发现的主机（点击连接/断开）、本机接收开关、扫描按钮（或按 `r`），以及“全部断开”操作。
+
+```bash
+omarchy plugin disable yangkang5303.audio-cast
+omarchy plugin remove yangkang5303.audio-cast
 ```
 
 ### 配置

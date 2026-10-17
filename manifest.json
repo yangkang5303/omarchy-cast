@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "yangkang5303.audio-cast",
+  "name": "Audio Cast",
+  "version": "1.0.0",
+  "author": "yangkang5303",
+  "license": "MIT",
+  "description": "Cast this host's audio to another computer on the LAN and receive audio from other hosts. AirPlay-like, built on PipeWire.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Audio Cast",
+    "description": "Pick a LAN host and route audio to it; toggle receiving on this host.",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
