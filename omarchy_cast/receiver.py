@@ -14,17 +14,17 @@ class Receiver:
         self.port = int(port or cfg["port"])
         self.name = name or cfg["display_name"]
         self.auth = cfg.get("auth", "anonymous")
-        self.lan_only = cfg.get("lan_only", True)
+        self.listen = (cfg.get("listen") or "").strip()
         self.module_id = None
         self.publisher = None
         self.running = True
 
     def _module_args(self):
         args = [f"port={self.port}"]
+        if self.listen:
+            args.append(f"listen={self.listen}")
         if self.auth == "anonymous":
             args.append("auth-anonymous=1")
-        if self.lan_only:
-            args.append(f"auth-ip-acl={config.LAN_ACL}")
         return args
 
     def load_module(self):
@@ -57,11 +57,20 @@ class Receiver:
     def run(self):
         self.load_module()
         self.start_publisher()
+        where = self.listen or "all interfaces"
         print(
-            f"[omarchy-cast] receiving on port {self.port} as '{self.name}' "
-            f"(auth={self.auth}, lan_only={self.lan_only})",
+            f"[omarchy-cast] receiving on {where}:{self.port} as '{self.name}' "
+            f"(auth={self.auth})",
             flush=True,
         )
+        if self.auth == "anonymous":
+            print(
+                "[omarchy-cast] warning: anonymous auth grants unrestricted access to "
+                "any client that can reach the listener. Set 'listen' to a LAN address, "
+                "restrict the port with a firewall, or use cookie auth.",
+                file=sys.stderr,
+                flush=True,
+            )
         signal.signal(signal.SIGTERM, self._stop)
         signal.signal(signal.SIGINT, self._stop)
         try:

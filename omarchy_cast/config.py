@@ -13,12 +13,10 @@ DEFAULTS = {
     "display_name": None,
     "port": DEFAULT_PORT,
     "auth": "anonymous",
-    "lan_only": True,
+    "listen": "",
     "set_default": True,
     "move_streams": True,
 }
-
-LAN_ACL = "127.0.0.1;192.168.0.0/16;10.0.0.0/8;172.16.0.0/12"
 
 
 def _hostname():

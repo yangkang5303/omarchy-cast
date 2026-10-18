@@ -162,7 +162,7 @@ omarchy plugin remove yangkang5303.audio-cast
 | `display_name` | hostname | name other hosts see in discovery |
 | `port` | `4713` | receiver TCP port |
 | `auth` | `"anonymous"` | receiver auth mode (`"anonymous"` or `"cookie"`) |
-| `lan_only` | `true` | restrict connections to private ranges via `auth-ip-acl` |
+| `listen` | `""` | bind address for the receiver (empty = all interfaces) |
 | `set_default` | `true` | make the cast device the default output on connect |
 | `move_streams` | `true` | move current playback to the cast device on connect |
 
@@ -170,12 +170,14 @@ omarchy plugin remove yangkang5303.audio-cast
 omarchy-cast config                       # show current config
 omarchy-cast config --set display_name "Living Room"
 omarchy-cast config --set port 4713
+omarchy-cast config --set listen 192.168.1.20   # bind one interface only
 ```
 
 ### Security
 
-- The receiver listens on TCP `4713`. With `lan_only` enabled, `auth-ip-acl` limits access to loopback and private ranges (`192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`).
-- The default `auth` is `anonymous`: **anyone on those private networks can connect** and use your audio server. On a trusted home LAN this is usually fine; on shared networks, disable the receiver (`omarchy-cast disable-receiver`) or restrict `auth-ip-acl`.
+- The receiver listens on TCP `4713`. PipeWire's `module-native-protocol-tcp` accepts only `port`, `listen`, and `auth-anonymous` — it has **no IP allowlist**. Anonymous mode grants unrestricted access to any client that can reach the listener, **not** just private address ranges.
+- Set `listen` to your LAN address to bind a single interface, keep the receiver off on untrusted networks, restrict TCP `4713` with a host firewall, or use `"cookie"` auth for stronger control.
+- The default `auth` is `anonymous`: anyone who can reach the port can use your audio server. On a trusted home LAN this is usually fine.
 - If you enable `"cookie"` auth, all hosts must share the same PipeWire/Pulse cookie file.
 
 ### Troubleshooting
@@ -354,7 +356,7 @@ omarchy plugin remove yangkang5303.audio-cast
 | `display_name` | 主机名 | 其他主机在发现时看到的名字 |
 | `port` | `4713` | 接收端 TCP 端口 |
 | `auth` | `"anonymous"` | 接收端认证方式（`"anonymous"` 或 `"cookie"`） |
-| `lan_only` | `true` | 通过 `auth-ip-acl` 限制仅私网可连 |
+| `listen` | `""` | 接收端绑定地址（留空表示所有网卡） |
 | `set_default` | `true` | 连接时把投送设备设为默认输出 |
 | `move_streams` | `true` | 连接时把当前播放迁移到投送设备 |
 
@@ -362,12 +364,14 @@ omarchy plugin remove yangkang5303.audio-cast
 omarchy-cast config                       # 查看当前配置
 omarchy-cast config --set display_name "客厅"
 omarchy-cast config --set port 4713
+omarchy-cast config --set listen 192.168.1.20   # 仅绑定单个网卡
 ```
 
 ### 安全
 
-- 接收端监听 TCP `4713`。开启 `lan_only` 时，`auth-ip-acl` 仅允许回环与私网段（`192.168.0.0/16`、`10.0.0.0/8`、`172.16.0.0/12`）。
-- 默认 `auth` 为 `anonymous`：**上述私网内的任何主机都能连接并使用你的音频服务**。在可信的家庭局域网中通常没问题；在公共/共享网络中请关闭接收端（`omarchy-cast disable-receiver`）或收紧 `auth-ip-acl`。
+- 接收端监听 TCP `4713`。PipeWire 的 `module-native-protocol-tcp` 只接受 `port`、`listen` 与 `auth-anonymous`，**没有 IP 白名单**。匿名模式会对任何能连到该端口的客户端授予无限制访问，**并不限于私网地址段**。
+- 可把 `listen` 设为本机局域网地址以只绑定单个网卡；在不可信网络中关闭接收端；用主机防火墙限制 TCP `4713`；或改用 `"cookie"` 认证以获得更强的控制。
+- 默认 `auth` 为 `anonymous`：任何能访问该端口的主机都能使用你的音频服务。在可信的家庭局域网中通常没问题。
 - 若启用 `"cookie"` 认证，所有主机需共享同一份 PipeWire/Pulse cookie 文件。
 
 ### 常见问题
