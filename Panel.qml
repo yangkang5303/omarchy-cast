@@ -64,6 +64,13 @@ Panel {
     allowProcess.running = true
   }
 
+  // Lightweight refresh that only re-reads the host list (including each
+  // host's `connected` state) so the panel stays in sync with connection
+  // changes made from the GTK window or the CLI.
+  function syncConnections() {
+    listProcess.running = true
+  }
+
   function runAction(args, message) {
     root.busy = true
     root.status = message
@@ -186,6 +193,16 @@ Panel {
       root.busy = false
       Qt.callLater(root.refresh)
     }
+  }
+
+  // While the panel is open, periodically re-read the host list so the
+  // connect/disconnect state stays in sync with the GTK window and CLI.
+  Timer {
+    id: syncTimer
+    interval: 3000
+    repeat: true
+    running: root.opened
+    onTriggered: root.syncConnections()
   }
 
   KeyboardPanel {

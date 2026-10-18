@@ -58,6 +58,10 @@ class CastWindow(Gtk.ApplicationWindow):
         self.status.add_css_class("dim-label")
         outer.append(self.status)
 
+        # Keep connection state in sync with the Quickshell panel (or any
+        # other client) by periodically re-reading the active tunnel sinks.
+        GLib.timeout_add_seconds(3, self._sync_connections)
+
         self.refresh()
 
     def _build_this_host(self):
@@ -275,7 +279,29 @@ class CastWindow(Gtk.ApplicationWindow):
             button.connect("clicked", self._on_connect_clicked, host, is_conn)
             box.append(button)
             row.set_child(box)
+            # Remember the host and connect button so _sync_connections can
+            # update them in place when the connection state changes elsewhere.
+            row._host = host
+            row._button = button
             self.listbox.append(row)
+
+    def _sync_connections(self):
+        """Lightweight refresh of the connect/disconnect buttons so the GTK
+        window reflects connection changes made from the Quickshell panel
+        (or the CLI) without a full network re-scan."""
+        connected = pulse.tunnel_sinks()
+        row = self.listbox.get_first_child()
+        while row is not None:
+            host = getattr(row, "_host", None)
+            button = getattr(row, "_button", None)
+            if host is not None and button is not None:
+                is_conn = pulse.sink_name_for(host["name"]) in connected
+                button.set_label("Disconnect" if is_conn else "Connect")
+                button.remove_css_class("suggested-action")
+                button.remove_css_class("destructive-action")
+                button.add_css_class("suggested-action" if not is_conn else "destructive-action")
+            row = row.get_next_sibling()
+        return True  # keep the timeout alive
 
     def _on_connect_clicked(self, _button, host, is_conn):
         if is_conn:
