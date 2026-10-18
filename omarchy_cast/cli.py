@@ -125,6 +125,50 @@ def cmd_config(args):
     return 0
 
 
+def cmd_allow_list(args):
+    cfg = config.load()
+    data = {
+        "mode": cfg.get("allow_mode", "all"),
+        "ips": list(cfg.get("allowed_ips", [])),
+    }
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"mode: {data['mode']}")
+    if data["ips"]:
+        for ip in data["ips"]:
+            print(f"  - {ip}")
+    else:
+        print("  (no allowed IPs)")
+    return 0
+
+
+def cmd_allow_add(args):
+    try:
+        added = config.allow_add(args.ip)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"added {args.ip}" if added else f"{args.ip} already allowed")
+    return 0
+
+
+def cmd_allow_remove(args):
+    removed = config.allow_remove(args.ip)
+    print(f"removed {args.ip}" if removed else f"{args.ip} not in allowlist")
+    return 0
+
+
+def cmd_allow_mode(args):
+    try:
+        config.set_allow_mode(args.mode)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"allow mode set to {args.mode}")
+    return 0
+
+
 def cmd_gui(args):
     from . import gui
 
@@ -181,6 +225,25 @@ def build_parser():
     p = sub.add_parser("config", help="show or update configuration")
     p.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"))
     p.set_defaults(func=cmd_config)
+
+    p = sub.add_parser("allow", help="manage which remote IPs may cast to this host")
+    allow_sub = p.add_subparsers(dest="allow_command")
+
+    p = allow_sub.add_parser("list", help="show allow mode and allowed IPs")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_allow_list)
+
+    p = allow_sub.add_parser("add", help="allow a remote IP to cast to this host")
+    p.add_argument("ip")
+    p.set_defaults(func=cmd_allow_add)
+
+    p = allow_sub.add_parser("remove", help="stop allowing a remote IP")
+    p.add_argument("ip")
+    p.set_defaults(func=cmd_allow_remove)
+
+    p = allow_sub.add_parser("mode", help="set allow mode: 'all' or 'specific'")
+    p.add_argument("mode", choices=("all", "specific"))
+    p.set_defaults(func=cmd_allow_mode)
 
     p = sub.add_parser("gui", help="launch the graphical interface")
     p.set_defaults(func=cmd_gui)

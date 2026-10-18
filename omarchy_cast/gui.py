@@ -41,6 +41,7 @@ class CastWindow(Gtk.ApplicationWindow):
         self.set_child(outer)
 
         outer.append(self._build_this_host())
+        outer.append(self._build_allowlist())
         outer.append(self._build_options())
 
         label = Gtk.Label(label="Remote hosts", xalign=0)
@@ -96,6 +97,118 @@ class CastWindow(Gtk.ApplicationWindow):
             )
         )
         return frame
+
+    def _build_allowlist(self):
+        frame = Gtk.Frame(label="Allowed remote hosts")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{side}")(12)
+        frame.set_child(box)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.append(Gtk.Label(label="Restrict to allowed hosts", xalign=0, hexpand=True))
+        self.allow_switch = Gtk.Switch()
+        self.allow_switch.set_active(self.cfg.get("allow_mode", "all") == "specific")
+        self.allow_switch.set_valign(Gtk.Align.CENTER)
+        self.allow_switch.connect("state-set", self._on_allow_toggle)
+        row.append(self.allow_switch)
+        box.append(row)
+
+        hint = Gtk.Label(
+            label="When enabled, only the IPs below may cast audio to this host.",
+            xalign=0,
+            wrap=True,
+            css_classes=["dim-label"],
+        )
+        box.append(hint)
+
+        self.allow_list = Gtk.ListBox()
+        self.allow_list.add_css_class("boxed-list")
+        box.append(self.allow_list)
+
+        add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.allow_entry = Gtk.Entry(hexpand=True)
+        self.allow_entry.set_placeholder_text("192.168.1.10")
+        self.allow_entry.connect("activate", self._on_allow_add)
+        add_row.append(self.allow_entry)
+        add_btn = Gtk.Button(label="Allow")
+        add_btn.connect("clicked", self._on_allow_add)
+        add_row.append(add_btn)
+        box.append(add_row)
+
+        self._populate_allowlist()
+        return frame
+
+    def _populate_allowlist(self):
+        self._clear(self.allow_list)
+        ips = list(self.cfg.get("allowed_ips", []))
+        if not ips:
+            row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            row.set_child(Gtk.Label(label="No IPs allowed yet", css_classes=["dim-label"]))
+            self.allow_list.append(row)
+            return
+        for ip in ips:
+            row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(hbox, f"set_margin_{side}")(6)
+            hbox.append(Gtk.Label(label=ip, xalign=0, hexpand=True))
+            remove = Gtk.Button(label="Remove")
+            remove.add_css_class("destructive-action")
+            remove.connect("clicked", self._on_allow_remove, ip)
+            hbox.append(remove)
+            row.set_child(hbox)
+            self.allow_list.append(row)
+
+    def _on_allow_toggle(self, switch, state):
+        mode = "specific" if state else "all"
+
+        def do_set():
+            config.set_allow_mode(mode)
+            if service.is_active():
+                service.stop()
+                service.start()
+
+        run_async(do_set, self._after_allow_change)
+        self._set_status("Restricting to allowed hosts..." if state else "Allowing all hosts...")
+        return False
+
+    def _on_allow_add(self, _widget):
+        ip = self.allow_entry.get_text().strip()
+        if not ip:
+            return
+        self.allow_entry.set_text("")
+
+        def do_add():
+            config.allow_add(ip)
+            if service.is_active():
+                service.stop()
+                service.start()
+
+        run_async(do_add, self._after_allow_change)
+        self._set_status(f"Allowing {ip}...")
+
+    def _on_allow_remove(self, _button, ip):
+        def do_remove():
+            config.allow_remove(ip)
+            if service.is_active():
+                service.stop()
+                service.start()
+
+        run_async(do_remove, self._after_allow_change)
+        self._set_status(f"Removing {ip}...")
+
+    def _after_allow_change(self, _result, error):
+        if error:
+            self._set_status(f"Error: {error}")
+        else:
+            self.cfg = config.load()
+            self.allow_switch.set_active(self.cfg.get("allow_mode", "all") == "specific")
+            self._populate_allowlist()
+            self._set_status("Allowlist updated")
+        return False
 
     def _build_options(self):
         frame = Gtk.Frame(label="Connection options")

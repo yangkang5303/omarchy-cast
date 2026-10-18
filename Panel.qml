@@ -23,6 +23,11 @@ Panel {
   property bool cliMissing: false
   property string status: ""
 
+  property string allowMode: "all"
+  property var allowedIps: []
+  property string allowInput: ""
+  property bool allowBusy: false
+
   property string listOutput: ""
 
   readonly property color contentForeground: root.barForeground
@@ -57,6 +62,7 @@ Panel {
     root.status = "Scanning..."
     listProcess.running = true
     receiverProcess.running = true
+    allowProcess.running = true
   }
 
   function runAction(args, message) {
@@ -81,6 +87,31 @@ Panel {
   function setReceiver(on) {
     root.receiverActive = on
     runAction([on ? "enable-receiver" : "disable-receiver"], on ? "Starting receiver..." : "Stopping receiver...")
+  }
+
+  function refreshAllow() {
+    allowProcess.running = true
+  }
+
+  function setAllowMode(mode) {
+    root.allowBusy = true
+    allowActionProcess.command = ["omarchy-cast", "allow", "mode", mode]
+    allowActionProcess.running = true
+  }
+
+  function addAllowedIp() {
+    var ip = root.allowInput.trim()
+    if (!ip) return
+    root.allowInput = ""
+    root.allowBusy = true
+    allowActionProcess.command = ["omarchy-cast", "allow", "add", ip]
+    allowActionProcess.running = true
+  }
+
+  function removeAllowedIp(ip) {
+    root.allowBusy = true
+    allowActionProcess.command = ["omarchy-cast", "allow", "remove", ip]
+    allowActionProcess.running = true
   }
 
   Process {
@@ -120,6 +151,32 @@ Panel {
       id: receiverStdout
       waitForEnd: true
       onStreamFinished: root.receiverActive = (String(text).trim() === "active")
+    }
+  }
+
+  Process {
+    id: allowProcess
+    command: ["omarchy-cast", "allow", "list", "--json"]
+    stdout: StdioCollector {
+      id: allowStdout
+      waitForEnd: true
+      onStreamFinished: function(text) {
+        var data = {}
+        try { data = JSON.parse(String(text)) } catch (e) { data = {} }
+        root.allowMode = data.mode || "all"
+        root.allowedIps = data.ips || []
+      }
+    }
+  }
+
+  Process {
+    id: allowActionProcess
+    command: []
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      root.allowBusy = false
+      Qt.callLater(root.refreshAllow)
     }
   }
 
@@ -208,6 +265,121 @@ Panel {
             busy: root.busy
             foreground: root.contentForeground
             onToggled: root.setReceiver(!root.receiverActive)
+          }
+        }
+
+        Item {
+          width: parent.width
+          height: Math.max(allowText.implicitHeight, allowToggle.implicitHeight)
+
+          Text {
+            id: allowText
+            anchors.left: parent.left
+            anchors.right: allowToggle.left
+            anchors.rightMargin: Style.space(12)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Restrict to allowed hosts"
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          ToggleSwitch {
+            id: allowToggle
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            checked: root.allowMode === "specific"
+            busy: root.allowBusy
+            foreground: root.contentForeground
+            onToggled: root.setAllowMode(root.allowMode === "specific" ? "all" : "specific")
+          }
+        }
+
+        Column {
+          visible: root.allowMode === "specific"
+          width: parent.width
+          spacing: Style.space(6)
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: "Only these IPs may cast audio to this host. Others are rejected."
+            color: Qt.darker(root.contentForeground, 1.6)
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Repeater {
+            model: root.allowedIps
+
+            Item {
+              required property string modelData
+              width: parent.width
+              height: Math.max(ipText.implicitHeight, ipRemoveButton.implicitHeight)
+
+              Text {
+                id: ipText
+                anchors.left: parent.left
+                anchors.right: ipRemoveButton.left
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
+                text: modelData
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              PanelActionButton {
+                id: ipRemoveButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: "󰅖"
+                tooltipText: "Remove " + modelData
+                foreground: Color.urgent
+                fontFamily: root.contentFontFamily
+                onClicked: root.removeAllowedIp(modelData)
+              }
+            }
+          }
+
+          Text {
+            visible: root.allowedIps.length === 0
+            width: parent.width
+            text: "No IPs allowed yet. Add one below."
+            color: Qt.darker(root.contentForeground, 1.6)
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Item {
+            width: parent.width
+            height: Math.max(allowEntry.implicitHeight, allowAddButton.implicitHeight)
+
+            TextField {
+              id: allowEntry
+              anchors.left: parent.left
+              anchors.right: allowAddButton.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.allowInput
+              placeholderText: "192.168.1.10"
+              color: root.contentForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+              onTextChanged: root.allowInput = text
+              onAccepted: root.addAllowedIp()
+            }
+
+            PanelActionButton {
+              id: allowAddButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: "󰅂"
+              tooltipText: "Allow this IP"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onClicked: root.addAllowedIp()
+            }
           }
         }
 

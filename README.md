@@ -109,6 +109,22 @@ omarchy-cast receive             # run in the foreground (used by systemd)
 omarchy-cast status              # show receiver + connection state
 ```
 
+Restrict which remote hosts may cast to this host:
+
+```bash
+omarchy-cast allow list          # show allow mode and allowed IPs
+omarchy-cast allow mode specific # only allowed IPs may cast here
+omarchy-cast allow mode all      # any reachable host may cast (default)
+omarchy-cast allow add 192.168.1.10     # allow one IP
+omarchy-cast allow remove 192.168.1.10  # stop allowing an IP
+```
+
+When `allow mode` is `specific`, the receiver rejects connections from any
+source IP that is not in the allowlist, so unallowed hosts cannot cast audio
+to this machine. The receiver must be restarted for changes to take effect
+(`omarchy-cast stop-receiver && omarchy-cast start-receiver`, or toggle the
+panel switch).
+
 Graphical panel:
 
 ```bash
@@ -146,7 +162,7 @@ omarchy plugin enable yangkang5303.audio-cast --section right
 ```
 
 - Left-click the speaker icon to open the panel; right-click to launch the GTK4 app.
-- The panel lists discovered hosts (click to connect/disconnect), a switch to receive audio on this host, a scan button (or press `r`), and a "disconnect all" action.
+- The panel lists discovered hosts (click to connect/disconnect), a switch to receive audio on this host, a "Restrict to allowed hosts" switch with an IP allowlist editor, a scan button (or press `r`), and a "disconnect all" action.
 
 ```bash
 omarchy plugin disable yangkang5303.audio-cast
@@ -163,6 +179,9 @@ omarchy plugin remove yangkang5303.audio-cast
 | `port` | `4713` | receiver TCP port |
 | `auth` | `"anonymous"` | receiver auth mode (`"anonymous"` or `"cookie"`) |
 | `listen` | `""` | bind address for the receiver (empty = all interfaces) |
+| `allow_mode` | `"all"` | `"all"` = any reachable host may cast; `"specific"` = only `allowed_ips` |
+| `allowed_ips` | `[]` | IPs allowed to cast when `allow_mode` is `"specific"` |
+| `internal_port` | `0` | loopback port for the PipeWire module in `"specific"` mode (`0` = `port + 1`) |
 | `set_default` | `true` | make the cast device the default output on connect |
 | `move_streams` | `true` | move current playback to the cast device on connect |
 
@@ -171,6 +190,8 @@ omarchy-cast config                       # show current config
 omarchy-cast config --set display_name "Living Room"
 omarchy-cast config --set port 4713
 omarchy-cast config --set listen 192.168.1.20   # bind one interface only
+omarchy-cast config --set allow_mode specific
+omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 ```
 
 ### Security
@@ -179,6 +200,7 @@ omarchy-cast config --set listen 192.168.1.20   # bind one interface only
 - Set `listen` to your LAN address to bind a single interface, keep the receiver off on untrusted networks, restrict TCP `4713` with a host firewall, or use `"cookie"` auth for stronger control.
 - The default `auth` is `anonymous`: anyone who can reach the port can use your audio server. On a trusted home LAN this is usually fine.
 - If you enable `"cookie"` auth, all hosts must share the same PipeWire/Pulse cookie file.
+- **IP allowlist:** set `allow_mode` to `"specific"` to restrict which remote hosts may cast to this machine. In this mode the receiver binds PipeWire to loopback and runs a small TCP proxy on the public port that accepts connections only from the IPs in `allowed_ips`; unallowed sources are rejected before they reach the audio server. This is enforced at the TCP layer, independent of `auth`. Manage it with `omarchy-cast allow ...` or the panel/GTK switch.
 
 ### Troubleshooting
 
@@ -303,6 +325,20 @@ omarchy-cast receive             # 前台运行（systemd 使用）
 omarchy-cast status              # 查看接收端与连接状态
 ```
 
+限制哪些远程主机可以向本机投送音频：
+
+```bash
+omarchy-cast allow list          # 查看允许模式与已允许的 IP
+omarchy-cast allow mode specific # 仅允许列表中的 IP 投送
+omarchy-cast allow mode all      # 允许任意可达主机投送（默认）
+omarchy-cast allow add 192.168.1.10     # 允许某个 IP
+omarchy-cast allow remove 192.168.1.10  # 取消允许某个 IP
+```
+
+当 `allow mode` 为 `specific` 时，接收端会拒绝所有不在允许列表中的来源 IP，
+未获允许的主机无法向本机投送音频。修改后需重启接收端才能生效
+（`omarchy-cast stop-receiver && omarchy-cast start-receiver`，或切换面板开关）。
+
 图形面板：
 
 ```bash
@@ -340,7 +376,7 @@ omarchy plugin enable yangkang5303.audio-cast --section right
 ```
 
 - 左键点击喇叭图标打开面板；右键启动 GTK4 图形界面。
-- 面板列出发现的主机（点击连接/断开）、本机接收开关、扫描按钮（或按 `r`），以及“全部断开”操作。
+- 面板列出发现的主机（点击连接/断开）、本机接收开关、“仅允许指定主机”开关及 IP 白名单编辑、扫描按钮（或按 `r`），以及“全部断开”操作。
 
 ```bash
 omarchy plugin disable yangkang5303.audio-cast
@@ -357,6 +393,9 @@ omarchy plugin remove yangkang5303.audio-cast
 | `port` | `4713` | 接收端 TCP 端口 |
 | `auth` | `"anonymous"` | 接收端认证方式（`"anonymous"` 或 `"cookie"`） |
 | `listen` | `""` | 接收端绑定地址（留空表示所有网卡） |
+| `allow_mode` | `"all"` | `"all"` = 任意可达主机可投送；`"specific"` = 仅 `allowed_ips` |
+| `allowed_ips` | `[]` | `allow_mode` 为 `"specific"` 时允许投送的 IP 列表 |
+| `internal_port` | `0` | `"specific"` 模式下 PipeWire 模块的回环端口（`0` = `port + 1`） |
 | `set_default` | `true` | 连接时把投送设备设为默认输出 |
 | `move_streams` | `true` | 连接时把当前播放迁移到投送设备 |
 
@@ -365,6 +404,8 @@ omarchy-cast config                       # 查看当前配置
 omarchy-cast config --set display_name "客厅"
 omarchy-cast config --set port 4713
 omarchy-cast config --set listen 192.168.1.20   # 仅绑定单个网卡
+omarchy-cast config --set allow_mode specific
+omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 ```
 
 ### 安全
@@ -373,6 +414,7 @@ omarchy-cast config --set listen 192.168.1.20   # 仅绑定单个网卡
 - 可把 `listen` 设为本机局域网地址以只绑定单个网卡；在不可信网络中关闭接收端；用主机防火墙限制 TCP `4713`；或改用 `"cookie"` 认证以获得更强的控制。
 - 默认 `auth` 为 `anonymous`：任何能访问该端口的主机都能使用你的音频服务。在可信的家庭局域网中通常没问题。
 - 若启用 `"cookie"` 认证，所有主机需共享同一份 PipeWire/Pulse cookie 文件。
+- **IP 白名单：** 将 `allow_mode` 设为 `"specific"` 可限制哪些远程主机能向本机投送。此模式下接收端把 PipeWire 绑定到回环地址，并在公共端口上运行一个小的 TCP 代理，只接受 `allowed_ips` 中 IP 的连接；未获允许的来源在到达音频服务之前即被拒绝。该限制在 TCP 层生效，与 `auth` 无关。可通过 `omarchy-cast allow ...` 或面板/GTK 开关管理。
 
 ### 常见问题
 
