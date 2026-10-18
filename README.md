@@ -162,7 +162,7 @@ omarchy plugin enable yangkang5303.audio-cast --section right
 ```
 
 - Left-click the speaker icon to open the panel; right-click to launch the GTK4 app.
-- The panel lists discovered hosts (click to connect/disconnect), a switch to receive audio on this host, a "Restrict to allowed hosts" switch with an IP allowlist editor, a scan button (or press `r`), and a "disconnect all" action.
+- The panel lists discovered hosts (click to connect/disconnect, or use the per-host button to add/remove that host from the allowlist), a switch to receive audio on this host, a "Restrict to allowed hosts" switch, a scan button (or press `r`), and a "disconnect all" action.
 
 ```bash
 omarchy plugin disable yangkang5303.audio-cast
@@ -376,7 +376,7 @@ omarchy plugin enable yangkang5303.audio-cast --section right
 ```
 
 - 左键点击喇叭图标打开面板；右键启动 GTK4 图形界面。
-- 面板列出发现的主机（点击连接/断开）、本机接收开关、“仅允许指定主机”开关及 IP 白名单编辑、扫描按钮（或按 `r`），以及“全部断开”操作。
+- 面板列出发现的主机（点击连接/断开，或用每台主机旁的按钮将其加入/移出白名单）、本机接收开关、“仅允许指定主机”开关、扫描按钮（或按 `r`），以及“全部断开”操作。
 
 ```bash
 omarchy plugin disable yangkang5303.audio-cast

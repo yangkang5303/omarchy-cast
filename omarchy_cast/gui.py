@@ -99,7 +99,7 @@ class CastWindow(Gtk.ApplicationWindow):
         return frame
 
     def _build_allowlist(self):
-        frame = Gtk.Frame(label="Allowed remote hosts")
+        frame = Gtk.Frame(label="Allowlist")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         for side in ("top", "bottom", "start", "end"):
             getattr(box, f"set_margin_{side}")(12)
@@ -115,52 +115,16 @@ class CastWindow(Gtk.ApplicationWindow):
         box.append(row)
 
         hint = Gtk.Label(
-            label="When enabled, only the IPs below may cast audio to this host.",
+            label="When enabled, only hosts you add to the allowlist may cast audio to this host.",
             xalign=0,
             wrap=True,
             css_classes=["dim-label"],
         )
         box.append(hint)
-
-        self.allow_list = Gtk.ListBox()
-        self.allow_list.add_css_class("boxed-list")
-        box.append(self.allow_list)
-
-        add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.allow_entry = Gtk.Entry(hexpand=True)
-        self.allow_entry.set_placeholder_text("192.168.1.10")
-        self.allow_entry.connect("activate", self._on_allow_add)
-        add_row.append(self.allow_entry)
-        add_btn = Gtk.Button(label="Allow")
-        add_btn.connect("clicked", self._on_allow_add)
-        add_row.append(add_btn)
-        box.append(add_row)
-
-        self._populate_allowlist()
         return frame
 
-    def _populate_allowlist(self):
-        self._clear(self.allow_list)
-        ips = list(self.cfg.get("allowed_ips", []))
-        if not ips:
-            row = Gtk.ListBoxRow()
-            row.set_activatable(False)
-            row.set_child(Gtk.Label(label="No IPs allowed yet", css_classes=["dim-label"]))
-            self.allow_list.append(row)
-            return
-        for ip in ips:
-            row = Gtk.ListBoxRow()
-            row.set_activatable(False)
-            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            for side in ("top", "bottom", "start", "end"):
-                getattr(hbox, f"set_margin_{side}")(6)
-            hbox.append(Gtk.Label(label=ip, xalign=0, hexpand=True))
-            remove = Gtk.Button(label="Remove")
-            remove.add_css_class("destructive-action")
-            remove.connect("clicked", self._on_allow_remove, ip)
-            hbox.append(remove)
-            row.set_child(hbox)
-            self.allow_list.append(row)
+    def _is_allowed(self, ip):
+        return ip in list(self.cfg.get("allowed_ips", []))
 
     def _on_allow_toggle(self, switch, state):
         mode = "specific" if state else "all"
@@ -175,30 +139,20 @@ class CastWindow(Gtk.ApplicationWindow):
         self._set_status("Restricting to allowed hosts..." if state else "Allowing all hosts...")
         return False
 
-    def _on_allow_add(self, _widget):
-        ip = self.allow_entry.get_text().strip()
-        if not ip:
-            return
-        self.allow_entry.set_text("")
+    def _on_allow_toggle_host(self, _button, host):
+        ip = host["address"]
 
-        def do_add():
-            config.allow_add(ip)
+        def do_toggle():
+            if self._is_allowed(ip):
+                config.allow_remove(ip)
+            else:
+                config.allow_add(ip)
             if service.is_active():
                 service.stop()
                 service.start()
 
-        run_async(do_add, self._after_allow_change)
-        self._set_status(f"Allowing {ip}...")
-
-    def _on_allow_remove(self, _button, ip):
-        def do_remove():
-            config.allow_remove(ip)
-            if service.is_active():
-                service.stop()
-                service.start()
-
-        run_async(do_remove, self._after_allow_change)
-        self._set_status(f"Removing {ip}...")
+        run_async(do_toggle, self._after_allow_change)
+        self._set_status(f"Updating allowlist for {ip}...")
 
     def _after_allow_change(self, _result, error):
         if error:
@@ -206,7 +160,7 @@ class CastWindow(Gtk.ApplicationWindow):
         else:
             self.cfg = config.load()
             self.allow_switch.set_active(self.cfg.get("allow_mode", "all") == "specific")
-            self._populate_allowlist()
+            self._populate(pulse.tunnel_sinks())
             self._set_status("Allowlist updated")
         return False
 
@@ -311,6 +265,11 @@ class CastWindow(Gtk.ApplicationWindow):
                 )
             )
             box.append(info)
+            allowed = self._is_allowed(host["address"])
+            allow_btn = Gtk.Button(label="Remove from allow" if allowed else "Add to allow")
+            allow_btn.add_css_class("destructive-action" if allowed else "suggested-action")
+            allow_btn.connect("clicked", self._on_allow_toggle_host, host)
+            box.append(allow_btn)
             button = Gtk.Button(label="Disconnect" if is_conn else "Connect")
             button.add_css_class("suggested-action" if not is_conn else "destructive-action")
             button.connect("clicked", self._on_connect_clicked, host, is_conn)
