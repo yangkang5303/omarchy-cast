@@ -76,13 +76,23 @@ class Receiver:
             util.pactl(["unload-module", module["id"]], check=False)
         self.module_id = None
 
+    def _proxy_allowlist(self):
+        """What the proxy should filter on, which is nothing in "all" mode.
+
+        ``allowed_ips`` keeps whatever the user has collected there, so the
+        list survives turning the restriction off and on. Handing it to the
+        proxy while the mode is "all" would quietly restrict a receiver that
+        every front end describes as open.
+        """
+        return None if self.allow_mode == "all" else self.allowed_ips
+
     def start_proxy(self):
         listen_host = self.listen or "0.0.0.0"
         self.proxy = proxy.TcpProxy(
             listen_host,
             self.port,
             self.backend(),
-            allowed=None if self.allow_mode == "all" else self.allowed_ips,
+            allowed=self._proxy_allowlist(),
         )
         self.proxy.start()
 
@@ -116,7 +126,14 @@ class Receiver:
         The CLI reads this to tell whether the receiver that is running is
         this build -- an older one keeps the allowlist it cached at startup,
         and only a restart reaches it.
+
+        Nothing is published while the listeners are down, so the CLI does not
+        promise that a change has been applied by a receiver that is not
+        serving anything.
         """
+        if self._listener_down():
+            state.clear()
+            return
         state.write(self.port, self.allow_mode, self.allowed_ips)
 
     def _listener_down(self):
@@ -151,9 +168,9 @@ class Receiver:
             return True
         if self.allowed_ips == before_allowed:
             return False
-        if self.proxy is None:
+        if not self.proxy.set_allowed(self._proxy_allowlist()):
+            # "all" mode: the list moved but the proxy filters on none of it.
             return False
-        self.proxy.set_allowed(self.allowed_ips)
         dropped = self.proxy.drop_disallowed()
         print(
             f"[omarchy-cast] allowlist updated: "

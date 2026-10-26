@@ -53,7 +53,14 @@ def save(cfg):
     # does something. ``auth`` and ``internal_port`` left configs this way.
     cfg = {key: value for key, value in cfg.items() if key in DEFAULTS}
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
+    # Written through a temporary file and renamed into place. The running
+    # receiver re-reads this once a second, and a plain write truncates before
+    # it fills: a read landing in that window parses nothing, falls back to the
+    # defaults below, and the receiver rebinds its listeners on the default
+    # port with an empty allowlist -- cutting off the audio it was carrying.
+    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    tmp.replace(CONFIG_PATH)
 
 
 def set_value(key, value):

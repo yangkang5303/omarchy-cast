@@ -171,10 +171,11 @@ class CastWindow(Gtk.ApplicationWindow):
         mode = "specific" if state else "all"
 
         def do_set():
+            # No restart: the running receiver re-reads its config and rebinds
+            # on its own. Restarting would cut off whatever is playing through
+            # it, and the bar panel has never done so. An older receiver that
+            # cannot do this is reported by the stale note above instead.
             config.set_allow_mode(mode)
-            if service.is_active():
-                service.stop()
-                service.start()
 
         run_async(do_set, self._after_allow_change)
         self._set_status("Restricting to allowed hosts..." if state else "Allowing all hosts...")
@@ -188,9 +189,6 @@ class CastWindow(Gtk.ApplicationWindow):
                 config.allow_remove(ip)
             else:
                 config.allow_add(ip)
-            if service.is_active():
-                service.stop()
-                service.start()
 
         run_async(do_toggle, self._after_allow_change)
         self._set_status(f"Updating allowlist for {ip}...")

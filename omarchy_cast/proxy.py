@@ -29,10 +29,6 @@ def dial(backend, timeout=5):
     return socket.create_connection(backend, timeout=timeout)
 
 
-def describe(backend):
-    return backend if isinstance(backend, str) else "%s:%s" % backend
-
-
 def _shutdown(sock):
     """Wake whichever thread is blocked on this socket and send the FIN.
 
@@ -146,8 +142,13 @@ class TcpProxy:
         except OSError:
             client.close()
             return
-        client.settimeout(30)
-        backend.settimeout(30)
+        # Blocking, with no read deadline: an established connection that is
+        # simply quiet -- playback paused, a gap between tracks -- is not a
+        # dead one, and a deadline here would close it without a word. The
+        # threads are woken by ``_shutdown`` instead, which is what stopping
+        # the proxy and dropping a disallowed host both use.
+        client.settimeout(None)
+        backend.settimeout(None)
         with self._lock:
             # Re-checked under the lock: the allowlist may have been replaced
             # while we were dialing the backend.

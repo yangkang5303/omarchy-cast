@@ -175,6 +175,30 @@ class AllowModeDefaultTests(unittest.TestCase):
         self.assertTrue(config.allow_remove("192.168.1.10"))
         self.assertTrue(config.accepts_nothing())
 
+    def test_saving_is_atomic(self):
+        """A reader must never see a half-written config.
+
+        The running receiver re-reads this file once a second. A truncated
+        read parses as nothing, falls back to the defaults, and makes the
+        receiver rebind on the default port with an empty allowlist, dropping
+        the audio it was carrying.
+        """
+        config.save(dict(config.DEFAULTS, display_name="box", port=9999))
+        seen = []
+
+        real_replace = Path.replace
+
+        def replace_spy(self, target):
+            # Whatever a reader sees at this instant is the old file, whole.
+            seen.append(json.loads(Path(target).read_text()))
+            return real_replace(self, target)
+
+        Path.replace = replace_spy
+        self.addCleanup(setattr, Path, "replace", real_replace)
+        config.set_value("port", 4800)
+        self.assertEqual([entry["port"] for entry in seen], [9999])
+        self.assertEqual(json.loads(Path(config.CONFIG_PATH).read_text())["port"], 4800)
+
     def test_saving_drops_keys_we_no_longer_honour(self):
         """A dead key in the file reads like a setting that still does something."""
         Path(config.CONFIG_PATH).write_text(
@@ -357,6 +381,24 @@ class ProxyEnforcementTests(unittest.TestCase):
         self.assertTrue(self.proxy.set_allowed(["127.0.0.2"]))
         self.assertEqual(self.proxy.allowed, {"127.0.0.2"})
 
+    def test_an_idle_connection_is_left_alone(self):
+        """A quiet connection is not a dead one.
+
+        Playback pauses and gaps between tracks produce no bytes. A read
+        deadline here closed such a connection with nothing in the log.
+        """
+        port = self.start_proxy(["127.0.0.1"])
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            sock.sendall(b"ping")
+            self.assertEqual(sock.recv(16), b"ping")
+            for sides in (self.proxy._live.items(),):
+                for client, (_ip, backend) in list(sides):
+                    # What the proxy left on the sockets it owns decides
+                    # whether a quiet minute kills the connection.
+                    self.assertIsNone(client.gettimeout())
+                    self.assertIsNone(backend.gettimeout())
+
     def test_drop_disallowed_cuts_an_open_connection(self):
         port = self.start_proxy(["127.0.0.1"])
         with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
@@ -483,6 +525,30 @@ class ReceiverReloadTests(unittest.TestCase):
         self.assertEqual(rcv.proxy.allowed, set())
         self.assertEqual(self.talk(port), b"")
 
+    def test_all_mode_never_starts_filtering(self):
+        """Collecting hosts while the restriction is off must not turn it on.
+
+        The panel shows the per-host allow button in "all" mode too, so one
+        click writes allowed_ips. Handing that list to the proxy would refuse
+        every other host while the switch, the hint and `status` all still say
+        any reachable host may cast.
+        """
+        rcv, port = self.start_receiver(allow_mode="all", allowed_ips=[])
+        self.assertIsNone(rcv.proxy.allowed)
+        config.allow_add("10.0.0.99")
+        self.assertFalse(rcv.reload())
+        self.assertIsNone(rcv.proxy.allowed)
+        self.assertEqual(self.talk(port), b"ping")  # not in allowed_ips, still served
+
+    def test_the_collected_list_applies_once_the_mode_is_on(self):
+        rcv, port = self.start_receiver(allow_mode="all", allowed_ips=[])
+        config.allow_add("10.0.0.99")
+        rcv.reload()
+        config.set_allow_mode("specific")
+        self.assertTrue(rcv.reload())
+        self.assertEqual(rcv.proxy.allowed, {"10.0.0.99"})
+        self.assertEqual(self.talk(port), b"")
+
     def test_a_downed_listener_is_rebuilt(self):
         rcv, _port = self.start_receiver()
         rcv.stop_proxy()  # a reload that failed part way through
@@ -546,12 +612,36 @@ class ReceiverStateTests(unittest.TestCase):
         self.assertFalse(state.is_current(live))
 
     def test_receiver_publishes_what_it_enforces(self):
-        config.save(dict(config.DEFAULTS, display_name="box", allowed_ips=["10.0.0.5"]))
+        unix_echo_server(self)
+        config.save(
+            dict(
+                config.DEFAULTS,
+                display_name="box",
+                port=free_port(),
+                allowed_ips=["10.0.0.5"],
+            )
+        )
         self.addCleanup(Path(config.CONFIG_PATH).unlink, True)
-        receiver.Receiver().publish_state()
+        rcv = receiver.Receiver()
+        rcv.start_proxy()
+        self.addCleanup(rcv.stop_proxy)
+        rcv.publish_state()
         live = state.read()
         self.assertEqual(live["allowed_ips"], ["10.0.0.5"])
         self.assertEqual(live["allow_mode"], "specific")
+
+    def test_nothing_is_published_while_the_listeners_are_down(self):
+        """A receiver that is not serving must not claim to be enforcing.
+
+        The CLI reads this state to tell the user their change has been
+        applied; with no listener there is nothing applying anything.
+        """
+        config.save(dict(config.DEFAULTS, display_name="box", allowed_ips=["10.0.0.5"]))
+        self.addCleanup(Path(config.CONFIG_PATH).unlink, True)
+        state.write(4713, "specific", ["10.0.0.5"])
+        rcv = receiver.Receiver()  # start_proxy never called: nothing is listening
+        rcv.publish_state()
+        self.assertIsNone(state.read())
 
 
 class ApplyNoteTests(unittest.TestCase):
