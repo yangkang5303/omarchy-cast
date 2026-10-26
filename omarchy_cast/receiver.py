@@ -8,21 +8,47 @@ from . import proxy
 from . import pulse
 from . import util
 
+# How often the running receiver re-reads the config file.
+POLL_INTERVAL = 1.0
+
 
 class Receiver:
     def __init__(self, port=None, name=None):
+        # An explicit --port/--name on 'omarchy-cast receive' wins over the
+        # config file, now and on every later re-read.
+        self.port_override = int(port) if port else None
+        self.name_override = name or None
+        self.module_id = None
+        self.publisher = None
+        self.proxy = None
+        self.running = True
+        self.load_settings()
+
+    def load_settings(self):
+        """Read the settings that shape the listeners out of the config file."""
         cfg = config.load()
-        self.port = int(port or cfg["port"])
-        self.name = name or cfg["display_name"]
+        self.port = self.port_override or int(cfg["port"])
+        self.name = self.name_override or cfg["display_name"]
         self.auth = cfg.get("auth", "anonymous")
         self.listen = (cfg.get("listen") or "").strip()
         self.allow_mode = config.normalize_allow_mode(cfg.get("allow_mode"))
         self.allowed_ips = list(cfg.get("allowed_ips", []))
         self.internal_port = int(cfg.get("internal_port") or 0) or (self.port + 1)
-        self.module_id = None
-        self.publisher = None
-        self.proxy = None
-        self.running = True
+
+    def _listener_key(self):
+        """Everything but the allowlist itself that the listeners are built from.
+
+        A change here cannot be applied in place: the PipeWire module has to be
+        reloaded and the proxy rebound.
+        """
+        return (
+            self.port,
+            self.name,
+            self.auth,
+            self.listen,
+            self.allow_mode,
+            self.internal_port,
+        )
 
     def _module_args(self):
         # In "specific" mode the PipeWire module is bound to loopback only and
@@ -79,13 +105,63 @@ class Receiver:
                 self.publisher.kill()
         self.publisher = None
 
-    def _stop(self, *_):
-        self.running = False
-
-    def run(self):
+    def start(self):
         self.load_module()
         self.start_proxy()
         self.start_publisher()
+        self.announce()
+
+    def reload(self):
+        """Pick up config changes made while the receiver is running.
+
+        The panel, the GTK window, and ``omarchy-cast allow`` only write the
+        config file. Until the receiver reads it back, a host removed from the
+        allowlist is still allowed by the running proxy and can open new
+        connections to the audio server, even though every front end shows it
+        as removed.
+        """
+        before_key = self._listener_key()
+        before_allowed = list(self.allowed_ips)
+        self.load_settings()
+        changed = self._listener_key() != before_key
+        # ``module_id`` is None when a previous reload failed part way through,
+        # which leaves nothing listening: rebuild then too.
+        if changed or self.module_id is None:
+            print(
+                "[omarchy-cast] configuration changed, reloading"
+                if changed
+                else "[omarchy-cast] listener is down, restarting it",
+                flush=True,
+            )
+            self.stop_proxy()
+            self.stop_publisher()
+            self.unload_module()
+            self.start()
+            return True
+        if self.allowed_ips == before_allowed:
+            return False
+        if self.proxy is None:
+            return False
+        self.proxy.set_allowed(self.allowed_ips)
+        dropped = self.proxy.drop_disallowed()
+        print(
+            f"[omarchy-cast] allowlist updated: "
+            f"{len(self.allowed_ips)} allowed host(s)",
+            flush=True,
+        )
+        for ip in sorted(set(dropped)):
+            print(f"[omarchy-cast]   cut off {ip} (no longer allowed)", flush=True)
+        if not self.allowed_ips:
+            print(
+                "[omarchy-cast] no host is allowed any more, so every incoming "
+                "connection is refused",
+                file=sys.stderr,
+                flush=True,
+            )
+        return True
+
+    def announce(self):
+        """Log what the receiver accepts, and warn when that is everything."""
         where = self.listen or "all interfaces"
         if self.allow_mode == "specific":
             print(
@@ -131,11 +207,24 @@ class Receiver:
                 file=sys.stderr,
                 flush=True,
             )
+
+    def _stop(self, *_):
+        self.running = False
+
+    def run(self):
+        self.start()
         signal.signal(signal.SIGTERM, self._stop)
         signal.signal(signal.SIGINT, self._stop)
         try:
             while self.running:
-                time.sleep(2)
+                time.sleep(POLL_INTERVAL)
+                try:
+                    self.reload()
+                except Exception as exc:
+                    # A failed reload leaves the receiver without a listener,
+                    # which refuses audio rather than letting a stale
+                    # allowlist stand. Say so and keep trying.
+                    print(f"[omarchy-cast] reload failed: {exc}", file=sys.stderr, flush=True)
                 if self.publisher is None or self.publisher.poll() is not None:
                     self.start_publisher()
         finally:
