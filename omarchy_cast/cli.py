@@ -158,17 +158,14 @@ def cmd_allow_list(args):
     return 0
 
 
-def _restart_hint():
-    """Allowlist changes are read when the receiver starts, so say so."""
+def _apply_note():
+    """Say when the change reaches the receiver that is already running."""
     try:
         active = service.is_active()
     except util.CommandError:
-        return  # no systemctl: the allowlist change still stands
+        return  # no systemctl: the change still stands in the config
     if active:
-        print(
-            "restart the receiver to apply: "
-            "omarchy-cast stop-receiver && omarchy-cast start-receiver"
-        )
+        print(f"the running receiver applies this within {receiver.POLL_INTERVAL:g}s")
 
 
 def cmd_allow_add(args):
@@ -179,7 +176,7 @@ def cmd_allow_add(args):
         return 2
     print(f"added {args.ip}" if added else f"{args.ip} already allowed")
     if added:
-        _restart_hint()
+        _apply_note()
     return 0
 
 
@@ -187,7 +184,7 @@ def cmd_allow_remove(args):
     removed = config.allow_remove(args.ip)
     print(f"removed {args.ip}" if removed else f"{args.ip} not in allowlist")
     if removed:
-        _restart_hint()
+        _apply_note()
     return 0
 
 
@@ -207,7 +204,7 @@ def cmd_allow_mode(args):
         )
     elif config.accepts_nothing():
         print("no host is allowed yet; add one with 'omarchy-cast allow add <ip>'")
-    _restart_hint()
+    _apply_note()
     return 0
 
 

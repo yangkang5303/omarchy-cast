@@ -130,10 +130,11 @@ omarchy-cast allow mode all      # opt out: any reachable host may cast here
 ```
 
 In `specific` mode the receiver rejects connections from any source IP that is
-not in the allowlist, so unallowed hosts cannot cast audio to this machine. The
-allowlist is read when the receiver starts, so restart it to apply a change
-(`omarchy-cast stop-receiver && omarchy-cast start-receiver`, or toggle the
-panel switch, which restarts it for you).
+not in the allowlist, so unallowed hosts cannot cast audio to this machine. A
+running receiver re-reads the config once a second, so adding or removing a
+host takes effect without a restart: a removed host can open no new connection
+and the one it already had is cut off. Changing `allow_mode`, `port`, `listen`,
+or `auth` is picked up the same way, by rebinding the listener.
 
 In the bar panel and the GTK4 window you pick hosts from the discovered-host
 list instead: each host has an allow button, and "Restrict to allowed hosts" is
@@ -221,6 +222,7 @@ the program cannot make sense of never opens the receiver up.
 ### Security
 
 - **The receiver is restricted by default.** `allow_mode` defaults to `"specific"` and `allowed_ips` starts empty, so a new install accepts no incoming audio at all until you add the hosts you trust. The receiver binds PipeWire's listener to loopback and serves the public port with a small TCP proxy that forwards only the source IPs in `allowed_ips`; every other source is closed before it reaches the audio server. This is enforced at the TCP layer, independent of `auth`. Manage it with `omarchy-cast allow ...`, the panel switch, or the GTK switch.
+- **Allowlist changes apply to the running receiver.** Every front end — `omarchy-cast allow`, the bar panel, the GTK window — writes the same config file, and the receiver re-reads it once a second: a removed host stops being allowed there and then, and its open connection is dropped, so what the panel shows is what the receiver enforces. No restart, and no window in which a host you just removed can still reach the audio server.
 - A value of `allow_mode` that the program cannot parse is treated as `"specific"`: a missing key, a typo, a stale value, or an unreadable config file leaves the receiver restricted rather than open.
 - PipeWire's `module-native-protocol-tcp` accepts only `port`, `listen`, and `auth-anonymous` — it has **no IP allowlist** of its own, which is why the proxy above exists.
 - Allowed hosts are identified by source IP only. That is a LAN trust decision, not authentication: it does not survive an attacker who can spoof or take over an allowed address. Use `"cookie"` auth if you need more (all hosts must then share the same PipeWire/Pulse cookie file).
@@ -232,7 +234,7 @@ the program cannot make sense of never opens the receiver up.
 | Symptom | Fix |
 |---------|-----|
 | `No hosts found` | Receiver not running on the other host (`enable-receiver`), or `avahi-daemon` down, or a firewall blocks UDP `5353` / TCP `4713` |
-| Host is listed but `connect` plays nothing | The receiving host has not allowed you: run `omarchy-cast allow add <your ip>` there, then restart its receiver |
+| Host is listed but `connect` plays nothing | The receiving host has not allowed you: run `omarchy-cast allow add <your ip>` there (or use its allow button in the panel), then try again |
 | `pactl: command not found` | Install PipeWire/pulse tooling |
 | GUI does not start | Install `python-gobject` |
 | Device name shows `Cast:` only | Older PipeWire mishandles spaces; this version encodes spaces as non-breaking spaces — upgrade to the latest release |

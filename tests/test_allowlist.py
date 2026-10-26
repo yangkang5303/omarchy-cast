@@ -6,6 +6,8 @@ The config module resolves its directory at import time, so point it at a
 temporary one before importing anything from the package.
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -32,6 +34,14 @@ def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+def recv_until_closed(sock, limit=16):
+    """Read until the peer closes; b"" means the connection was cut off."""
+    try:
+        return sock.recv(limit)
+    except OSError:
+        return b""
 
 
 class EchoServer:
@@ -203,6 +213,157 @@ class ProxyEnforcementTests(unittest.TestCase):
     def test_allowed_none_means_no_filtering(self):
         port = self.start_proxy(None)
         self.assertEqual(self.talk(port), b"ping")
+
+    def test_set_allowed_gates_new_connections(self):
+        port = self.start_proxy(["127.0.0.1"])
+        self.assertEqual(self.talk(port), b"ping")
+        self.assertTrue(self.proxy.set_allowed([]))
+        self.assertEqual(self.talk(port), b"")
+        self.assertTrue(self.proxy.set_allowed(["127.0.0.1"]))
+        self.assertEqual(self.talk(port), b"ping")
+
+    def test_set_allowed_reports_whether_it_changed(self):
+        self.start_proxy(["127.0.0.1"])
+        self.assertFalse(self.proxy.set_allowed(["127.0.0.1"]))
+        self.assertTrue(self.proxy.set_allowed(["127.0.0.2"]))
+        self.assertEqual(self.proxy.allowed, {"127.0.0.2"})
+
+    def test_drop_disallowed_cuts_an_open_connection(self):
+        port = self.start_proxy(["127.0.0.1"])
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            sock.sendall(b"ping")
+            self.assertEqual(sock.recv(16), b"ping")
+            self.proxy.set_allowed([])
+            self.assertEqual(self.proxy.drop_disallowed(), ["127.0.0.1"])
+            self.assertEqual(recv_until_closed(sock), b"")
+
+    def test_drop_disallowed_keeps_a_still_allowed_connection(self):
+        port = self.start_proxy(["127.0.0.1"])
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            sock.sendall(b"ping")
+            self.assertEqual(sock.recv(16), b"ping")
+            self.proxy.set_allowed(["127.0.0.1", "10.0.0.9"])
+            self.assertEqual(self.proxy.drop_disallowed(), [])
+            sock.sendall(b"pong")
+            self.assertEqual(sock.recv(16), b"pong")
+
+
+class ReceiverReloadTests(unittest.TestCase):
+    """An allowlist edit has to reach the receiver that is already running.
+
+    Every front end -- the bar panel, the GTK window, and `omarchy-cast allow`
+    -- only writes the config file, so if the receiver did not read it back, a
+    removed host would stay allowed by the running proxy.
+    """
+
+    def setUp(self):
+        Path(config.CONFIG_PATH).unlink(missing_ok=True)
+        self.backend = EchoServer()
+        self.addCleanup(self.backend.close)
+        # The receiver logs what it applied; keep it out of the test output.
+        self.log = io.StringIO()
+        stack = contextlib.ExitStack()
+        stack.enter_context(contextlib.redirect_stdout(self.log))
+        stack.enter_context(contextlib.redirect_stderr(self.log))
+        self.addCleanup(stack.close)
+
+    def tearDown(self):
+        Path(config.CONFIG_PATH).unlink(missing_ok=True)
+
+    def start_receiver(self, **patch):
+        """A receiver with its proxy up, but no PipeWire module behind it."""
+        port = free_port()
+        cfg = dict(
+            config.DEFAULTS,
+            display_name="box",
+            port=port,
+            internal_port=self.backend.port,
+            allowed_ips=["127.0.0.1"],
+        )
+        cfg.update(patch)
+        config.save(cfg)
+        rcv = receiver.Receiver()
+        rcv.module_id = "stub"  # stands in for the loaded PipeWire module
+        rcv.start_proxy()
+        self.addCleanup(rcv.stop_proxy)
+        return rcv, port
+
+    @staticmethod
+    def talk(port):
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            try:
+                sock.sendall(b"ping")
+                return sock.recv(16)
+            except OSError:
+                return b""
+
+    def test_removed_host_stops_being_allowed(self):
+        rcv, port = self.start_receiver()
+        self.assertEqual(self.talk(port), b"ping")
+        config.allow_remove("127.0.0.1")
+        self.assertTrue(rcv.reload())
+        self.assertEqual(self.talk(port), b"")
+
+    def test_reload_cuts_off_the_removed_host(self):
+        rcv, port = self.start_receiver()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            sock.sendall(b"ping")
+            self.assertEqual(sock.recv(16), b"ping")
+            config.allow_remove("127.0.0.1")
+            rcv.reload()
+            self.assertEqual(recv_until_closed(sock), b"")
+        self.assertIn("cut off 127.0.0.1", self.log.getvalue())
+
+    def test_added_host_is_allowed_without_a_restart(self):
+        rcv, port = self.start_receiver(allowed_ips=["10.0.0.9"])
+        self.assertEqual(self.talk(port), b"")
+        config.allow_add("127.0.0.1")
+        self.assertTrue(rcv.reload())
+        self.assertEqual(self.talk(port), b"ping")
+
+    def test_reload_without_a_change_does_nothing(self):
+        rcv, port = self.start_receiver()
+        self.assertFalse(rcv.reload())
+        self.assertEqual(self.talk(port), b"ping")
+
+    def test_mode_change_rebuilds_the_listeners(self):
+        rcv, _port = self.start_receiver()
+        rebuilt = []
+        rcv.load_module = lambda: rebuilt.append("module") or "stub"
+        rcv.start_publisher = lambda: rebuilt.append("publisher")
+        rcv.stop_publisher = lambda: None
+        rcv.unload_module = lambda: None
+        config.set_allow_mode("all")
+        self.assertTrue(rcv.reload())
+        self.assertEqual(rebuilt, ["module", "publisher"])
+        self.assertEqual(rcv.allow_mode, "all")
+        self.assertIsNone(rcv.proxy)
+
+    def test_a_downed_listener_is_rebuilt(self):
+        rcv, _port = self.start_receiver()
+        rcv.module_id = None  # a reload that failed part way through
+        rebuilt = []
+        rcv.load_module = lambda: rebuilt.append("module") or "stub"
+        rcv.start_publisher = lambda: rebuilt.append("publisher")
+        rcv.stop_publisher = lambda: None
+        rcv.unload_module = lambda: None
+        self.assertTrue(rcv.reload())
+        self.assertEqual(rebuilt, ["module", "publisher"])
+
+    def test_explicit_port_and_name_win_over_the_config(self):
+        """'receive --port/--name' keeps winning on every later re-read."""
+        rcv, _port = self.start_receiver()
+        rcv.port_override, rcv.name_override = 9999, "fixed"
+        rcv.load_settings()
+        config.set_value("port", 4800)
+        config.set_value("display_name", "renamed")
+        rcv.load_settings()
+        self.assertEqual(rcv.port, 9999)
+        self.assertEqual(rcv.name, "fixed")
 
 
 if __name__ == "__main__":
