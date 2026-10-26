@@ -175,6 +175,18 @@ class AllowModeDefaultTests(unittest.TestCase):
         self.assertTrue(config.allow_remove("192.168.1.10"))
         self.assertTrue(config.accepts_nothing())
 
+    def test_saving_drops_keys_we_no_longer_honour(self):
+        """A dead key in the file reads like a setting that still does something."""
+        Path(config.CONFIG_PATH).write_text(
+            json.dumps(dict(config.DEFAULTS, auth="cookie", internal_port=4714))
+        )
+        self.assertEqual(config.load().get("auth"), "cookie")  # read as-is
+        config.allow_add("10.0.0.5")  # any write migrates the file
+        saved = json.loads(Path(config.CONFIG_PATH).read_text())
+        self.assertNotIn("auth", saved)
+        self.assertNotIn("internal_port", saved)
+        self.assertEqual(saved["allowed_ips"], ["10.0.0.5"])
+
     def test_config_round_trip_is_valid_json(self):
         config.allow_add("10.0.0.5")
         saved = json.loads(Path(config.CONFIG_PATH).read_text())

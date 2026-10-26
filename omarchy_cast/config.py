@@ -48,6 +48,10 @@ def load():
 
 
 def save(cfg):
+    # Keys we no longer honour are dropped rather than written back: a config
+    # that still lists a setting the program ignores reads like a setting that
+    # does something. ``auth`` and ``internal_port`` left configs this way.
+    cfg = {key: value for key, value in cfg.items() if key in DEFAULTS}
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
 
