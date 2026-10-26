@@ -1,11 +1,14 @@
 """A small TCP proxy used to enforce the receiver's IP allowlist.
 
-PipeWire's ``module-native-protocol-tcp`` has no IP allowlist, so when the
-receiver is in "specific" mode we bind that module to loopback only and run
-this proxy on the public port. The proxy accepts a connection, checks the
-peer's source IP against the allowlist, and only forwards allowed clients to
-the loopback PipeWire listener. Unallowed clients are dropped before they ever
-reach the audio server.
+PipeWire's ``module-native-protocol-tcp`` has no IP allowlist, so the receiver
+never lets it serve the public port: this proxy does, checking each peer's
+source IP against the allowlist and forwarding only allowed clients to the
+audio server. Unallowed clients are dropped before they ever reach it.
+
+The backend is whatever the receiver is willing to expose the audio server
+through -- the PipeWire/Pulse unix socket (the default: no TCP listener for a
+local user to connect to behind our back) or a loopback ``(host, port)`` pair
+when the audio server itself authenticates the client.
 
 The allowlist can be replaced while the proxy is running (see
 ``set_allowed``), because the panel, the GTK window, and ``omarchy-cast
@@ -14,6 +17,20 @@ allow`` all edit the config of a receiver that is already up.
 
 import socket
 import threading
+
+
+def dial(backend, timeout=5):
+    """Open a connection to ``backend``: a unix socket path or (host, port)."""
+    if isinstance(backend, str):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(backend)
+        return sock
+    return socket.create_connection(backend, timeout=timeout)
+
+
+def describe(backend):
+    return backend if isinstance(backend, str) else "%s:%s" % backend
 
 
 def _shutdown(sock):
@@ -42,14 +59,13 @@ class TcpProxy:
 
     ``allowed`` is an iterable of IP strings, or ``None`` to allow every
     client. The proxy listens on ``(listen_host, listen_port)`` and forwards
-    to ``(backend_host, backend_port)``.
+    to ``backend``, which is a unix socket path or a ``(host, port)`` pair.
     """
 
-    def __init__(self, listen_host, listen_port, backend_host, backend_port, allowed=None):
+    def __init__(self, listen_host, listen_port, backend, allowed=None):
         self.listen_host = listen_host
         self.listen_port = listen_port
-        self.backend_host = backend_host
-        self.backend_port = backend_port
+        self.backend = backend
         self._lock = threading.Lock()
         self._allowed = set(allowed) if allowed is not None else None
         # Live connections, so a host that stops being allowed can be cut off
@@ -126,9 +142,7 @@ class TcpProxy:
             client.close()
             return
         try:
-            backend = socket.create_connection(
-                (self.backend_host, self.backend_port), timeout=5
-            )
+            backend = dial(self.backend)
         except OSError:
             client.close()
             return

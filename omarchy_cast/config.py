@@ -12,11 +12,9 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 DEFAULTS = {
     "display_name": None,
     "port": DEFAULT_PORT,
-    "auth": "anonymous",
     "listen": "",
     "allow_mode": "specific",
     "allowed_ips": [],
-    "internal_port": 0,
     "set_default": True,
     "move_streams": True,
 }

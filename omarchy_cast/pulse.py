@@ -1,8 +1,24 @@
+import os
 import re
 import time
 
 from . import SINK_PREFIX
 from . import util
+
+
+def native_socket():
+    """Path of the local PipeWire/Pulse native unix socket.
+
+    This is the audio server's own socket, reachable only by its owner: the
+    runtime directory above it is mode 0700, so another local user cannot
+    open it the way they could open a loopback TCP port.
+    """
+    for part in os.environ.get("PULSE_SERVER", "").split(";"):
+        part = part.strip()
+        if part.startswith("unix:"):
+            return part[len("unix:"):]
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(runtime, "pulse", "native")
 
 
 def wait_for_sink(name, timeout=6.0):

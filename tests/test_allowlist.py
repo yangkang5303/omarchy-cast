@@ -57,14 +57,27 @@ def recv_until_closed(sock, limit=16):
 
 
 class EchoServer:
-    """Stands in for the loopback PipeWire listener behind the proxy."""
+    """Stands in for the audio server behind the proxy.
 
-    def __init__(self):
-        self._server = socket.socket()
-        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server.bind(("127.0.0.1", 0))
+    With ``path`` it listens on a unix socket, the way PipeWire's own socket
+    does; without one it listens on loopback TCP, which is what cookie auth
+    still puts behind the proxy.
+    """
+
+    def __init__(self, path=None):
+        self.path = path
+        if path:
+            self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._server.bind(path)
+            self.port = None
+            self.address = path
+        else:
+            self._server = socket.socket()
+            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._server.bind(("127.0.0.1", 0))
+            self.port = self._server.getsockname()[1]
+            self.address = ("127.0.0.1", self.port)
         self._server.listen(4)
-        self.port = self._server.getsockname()[1]
         threading.Thread(target=self._accept_loop, daemon=True).start()
 
     def _accept_loop(self):
@@ -89,6 +102,31 @@ class EchoServer:
 
     def close(self):
         self._server.close()
+        if self.path:
+            Path(self.path).unlink(missing_ok=True)
+
+
+def unix_echo_server(test):
+    """An echo server on a unix socket, standing in for PipeWire's own.
+
+    ``pulse.native_socket`` is pointed at it for the duration of the test, so
+    the default (anonymous) receiver path is exercised without touching the
+    real audio server.
+    """
+    directory = tempfile.mkdtemp(prefix="omarchy-cast-sock-")
+    test.addCleanup(shutil.rmtree, directory, True)
+    server = EchoServer(path=os.path.join(directory, "native"))
+    test.addCleanup(server.close)
+    original = receiver.pulse.native_socket
+    receiver.pulse.native_socket = lambda: server.path
+    test.addCleanup(setattr, receiver.pulse, "native_socket", original)
+    return server
+
+
+def no_pactl(test, rcv):
+    """Keep a receiver under test away from the machine's real audio server."""
+    rcv.clear_modules = lambda: None
+    rcv.unload_module = lambda: None
 
 
 class AllowModeDefaultTests(unittest.TestCase):
@@ -144,7 +182,13 @@ class AllowModeDefaultTests(unittest.TestCase):
 
 
 class ReceiverBindingTests(unittest.TestCase):
-    """The PipeWire listener must stay on loopback whenever the proxy gates it."""
+    """The audio server must never be reachable around the proxy.
+
+    With the default anonymous auth it is reached over its unix socket, so
+    PipeWire opens no TCP port at all: a loopback port would be open to every
+    other local user on the machine, allowlist or not. Only cookie auth puts
+    a TCP listener back, and then the audio server checks the cookie itself.
+    """
 
     def setUp(self):
         Path(config.CONFIG_PATH).unlink(missing_ok=True)
@@ -152,34 +196,84 @@ class ReceiverBindingTests(unittest.TestCase):
     tearDown = setUp
 
     @staticmethod
-    def module_args(**patch):
+    def receiver_with(**patch):
         config.save(dict(config.DEFAULTS, display_name="box", **patch))
-        return receiver.Receiver()._module_args()
+        return receiver.Receiver()
 
-    def test_default_binds_pipewire_to_loopback(self):
-        args = self.module_args()
-        self.assertIn("listen=127.0.0.1", args)
-        self.assertIn(f"port={config.DEFAULT_PORT + 1}", args)
-        self.assertNotIn(f"port={config.DEFAULT_PORT}", args)
+    def test_the_backend_is_the_unix_socket(self):
+        server = unix_echo_server(self)
+        self.assertEqual(self.receiver_with().backend(), server.path)
 
-    def test_stale_mode_still_binds_to_loopback(self):
-        self.assertIn("listen=127.0.0.1", self.module_args(allow_mode="lan_only"))
+    def test_all_mode_opens_no_tcp_listener(self):
+        """Opting out of the allowlist must not re-expose the audio server."""
+        server = unix_echo_server(self)
+        self.assertEqual(self.receiver_with(allow_mode="all").backend(), server.path)
 
-    def test_listen_setting_does_not_widen_the_module(self):
-        args = self.module_args(listen="192.168.1.20")
-        self.assertIn("listen=127.0.0.1", args)
-        self.assertNotIn("listen=192.168.1.20", args)
+    def test_stale_mode_opens_no_tcp_listener(self):
+        server = unix_echo_server(self)
+        self.assertEqual(
+            self.receiver_with(allow_mode="lan_only").backend(), server.path
+        )
 
-    def test_all_mode_exposes_the_public_port(self):
-        args = self.module_args(allow_mode="all")
-        self.assertIn(f"port={config.DEFAULT_PORT}", args)
-        self.assertNotIn("listen=127.0.0.1", args)
+    def test_starting_unloads_any_tcp_module(self):
+        """An older build's loopback listener outlives it; take it down.
 
-    def test_proxy_is_only_started_in_specific_mode(self):
-        config.save(dict(config.DEFAULTS, display_name="box", allow_mode="all"))
-        rcv = receiver.Receiver()
-        rcv.start_proxy()
+        Leaving it loaded would keep a TCP port open beside the proxy, which
+        is exactly the way around the allowlist this topology removes.
+        """
+        unix_echo_server(self)
+        rcv = self.receiver_with(port=free_port())
+        unloaded = []
+        rcv.clear_modules = lambda: unloaded.append("cleared")
+        rcv.start_publisher = lambda: None
+        rcv.publish_state = lambda: None
+        rcv.announce = lambda: None
+        rcv.start()
+        self.addCleanup(rcv.stop_proxy)
+        self.assertEqual(unloaded, ["cleared"])
+
+    def test_a_missing_socket_refuses_to_serve(self):
+        """Fail closed: no backend means nothing listens, not an open port."""
+        original = receiver.pulse.native_socket
+        receiver.pulse.native_socket = lambda: "/nonexistent/pulse/native"
+        self.addCleanup(setattr, receiver.pulse, "native_socket", original)
+        rcv = self.receiver_with()
+        with self.assertRaises(RuntimeError):
+            rcv.backend()
+        with self.assertRaises(RuntimeError):
+            rcv.start_proxy()
         self.assertIsNone(rcv.proxy)
+
+    def test_the_receiver_cannot_load_a_tcp_module(self):
+        """There is no code path left that opens a PipeWire TCP port.
+
+        Cookie auth used to be the exception. It is not an exception:
+        PipeWire's pulse server admits a client that presents no valid
+        cookie, so such a port is open to every local user either way.
+        """
+        self.assertFalse(hasattr(receiver.Receiver, "load_module"))
+        self.assertFalse(hasattr(receiver.Receiver, "_module_args"))
+        self.assertNotIn("auth", config.DEFAULTS)
+
+    def test_listen_setting_binds_only_the_proxy(self):
+        unix_echo_server(self)
+        rcv = self.receiver_with(listen="127.0.0.1", port=free_port())
+        rcv.start_proxy()
+        self.addCleanup(rcv.stop_proxy)
+        self.assertEqual(rcv.proxy.listen_host, "127.0.0.1")
+
+    def test_the_proxy_serves_the_public_port_in_both_modes(self):
+        server = unix_echo_server(self)
+        for mode, expected in (("specific", set()), ("all", None)):
+            with self.subTest(mode=mode):
+                port = free_port()
+                rcv = self.receiver_with(allow_mode=mode, port=port)
+                rcv.start_proxy()
+                self.addCleanup(rcv.stop_proxy)
+                self.assertIsNotNone(rcv.proxy)
+                self.assertEqual(rcv.proxy.listen_port, port)
+                self.assertEqual(rcv.proxy.backend, server.path)
+                self.assertEqual(rcv.proxy.allowed, expected)
 
 
 class ProxyEnforcementTests(unittest.TestCase):
@@ -188,10 +282,10 @@ class ProxyEnforcementTests(unittest.TestCase):
         self.addCleanup(self.backend.close)
         self.proxy = None
 
-    def start_proxy(self, allowed):
+    def start_proxy(self, allowed, backend=None):
         port = free_port()
         self.proxy = proxy.TcpProxy(
-            "127.0.0.1", port, "127.0.0.1", self.backend.port, allowed=allowed
+            "127.0.0.1", port, backend or self.backend.address, allowed=allowed
         )
         self.proxy.start()
         self.addCleanup(self.proxy.stop)
@@ -220,6 +314,17 @@ class ProxyEnforcementTests(unittest.TestCase):
 
     def test_unlisted_source_is_refused(self):
         port = self.start_proxy(["10.1.2.3"])
+        self.assertEqual(self.talk(port), b"")
+
+    def test_a_unix_socket_backend_is_forwarded_to(self):
+        """The default backend is PipeWire's own socket, not a TCP port."""
+        server = unix_echo_server(self)
+        port = self.start_proxy(["127.0.0.1"], backend=server.path)
+        self.assertEqual(self.talk(port), b"ping")
+
+    def test_a_unix_socket_backend_still_filters(self):
+        server = unix_echo_server(self)
+        port = self.start_proxy(["10.1.2.3"], backend=server.path)
         self.assertEqual(self.talk(port), b"")
 
     def test_allowed_none_means_no_filtering(self):
@@ -272,8 +377,7 @@ class ReceiverReloadTests(unittest.TestCase):
 
     def setUp(self):
         Path(config.CONFIG_PATH).unlink(missing_ok=True)
-        self.backend = EchoServer()
-        self.addCleanup(self.backend.close)
+        self.backend = unix_echo_server(self)
         # The receiver logs what it applied; keep it out of the test output.
         self.log = io.StringIO()
         stack = contextlib.ExitStack()
@@ -291,13 +395,12 @@ class ReceiverReloadTests(unittest.TestCase):
             config.DEFAULTS,
             display_name="box",
             port=port,
-            internal_port=self.backend.port,
             allowed_ips=["127.0.0.1"],
         )
         cfg.update(patch)
         config.save(cfg)
         rcv = receiver.Receiver()
-        rcv.module_id = "stub"  # stands in for the loaded PipeWire module
+        no_pactl(self, rcv)
         rcv.start_proxy()
         self.addCleanup(rcv.stop_proxy)
         return rcv, port
@@ -343,28 +446,40 @@ class ReceiverReloadTests(unittest.TestCase):
         self.assertEqual(self.talk(port), b"ping")
 
     def test_mode_change_rebuilds_the_listeners(self):
-        rcv, _port = self.start_receiver()
+        rcv, port = self.start_receiver()
         rebuilt = []
-        rcv.load_module = lambda: rebuilt.append("module") or "stub"
         rcv.start_publisher = lambda: rebuilt.append("publisher")
         rcv.stop_publisher = lambda: None
-        rcv.unload_module = lambda: None
         config.set_allow_mode("all")
         self.assertTrue(rcv.reload())
-        self.assertEqual(rebuilt, ["module", "publisher"])
+        self.assertEqual(rebuilt, ["publisher"])
         self.assertEqual(rcv.allow_mode, "all")
-        self.assertIsNone(rcv.proxy)
+        # The proxy keeps serving the public port; it just stops filtering.
+        self.assertIsNotNone(rcv.proxy)
+        self.assertIsNone(rcv.proxy.allowed)
+        self.assertEqual(self.talk(port), b"ping")
+
+    def test_turning_the_allowlist_back_on_rebinds(self):
+        """The mode flip must reach the running proxy, not just the config."""
+        rcv, port = self.start_receiver(allow_mode="all")
+        rcv.start_publisher = lambda: None
+        rcv.stop_publisher = lambda: None
+        self.assertIsNone(rcv.proxy.allowed)
+        config.set_allow_mode("specific")
+        config.set_value("allowed_ips", [])
+        self.assertTrue(rcv.reload())
+        self.assertEqual(rcv.proxy.allowed, set())
+        self.assertEqual(self.talk(port), b"")
 
     def test_a_downed_listener_is_rebuilt(self):
         rcv, _port = self.start_receiver()
-        rcv.module_id = None  # a reload that failed part way through
+        rcv.stop_proxy()  # a reload that failed part way through
         rebuilt = []
-        rcv.load_module = lambda: rebuilt.append("module") or "stub"
         rcv.start_publisher = lambda: rebuilt.append("publisher")
         rcv.stop_publisher = lambda: None
-        rcv.unload_module = lambda: None
         self.assertTrue(rcv.reload())
-        self.assertEqual(rebuilt, ["module", "publisher"])
+        self.assertEqual(rebuilt, ["publisher"])
+        self.assertIsNotNone(rcv.proxy)
 
     def test_explicit_port_and_name_win_over_the_config(self):
         """'receive --port/--name' keeps winning on every later re-read."""

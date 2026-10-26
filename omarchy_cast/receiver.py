@@ -1,3 +1,4 @@
+import os
 import signal
 import sys
 import time
@@ -30,11 +31,9 @@ class Receiver:
         cfg = config.load()
         self.port = self.port_override or int(cfg["port"])
         self.name = self.name_override or cfg["display_name"]
-        self.auth = cfg.get("auth", "anonymous")
         self.listen = (cfg.get("listen") or "").strip()
         self.allow_mode = config.normalize_allow_mode(cfg.get("allow_mode"))
         self.allowed_ips = list(cfg.get("allowed_ips", []))
-        self.internal_port = int(cfg.get("internal_port") or 0) or (self.port + 1)
 
     def _listener_key(self):
         """Everything but the allowlist itself that the listeners are built from.
@@ -42,50 +41,48 @@ class Receiver:
         A change here cannot be applied in place: the PipeWire module has to be
         reloaded and the proxy rebound.
         """
-        return (
-            self.port,
-            self.name,
-            self.auth,
-            self.listen,
-            self.allow_mode,
-            self.internal_port,
-        )
+        return (self.port, self.name, self.listen, self.allow_mode)
 
-    def _module_args(self):
-        # In "specific" mode the PipeWire module is bound to loopback only and
-        # the public port is served by the allowlist proxy.
-        if self.allow_mode == "specific":
-            args = [f"port={self.internal_port}", "listen=127.0.0.1"]
-        else:
-            args = [f"port={self.port}"]
-            if self.listen:
-                args.append(f"listen={self.listen}")
-        if self.auth == "anonymous":
-            args.append("auth-anonymous=1")
-        return args
+    def backend(self):
+        """What the proxy forwards allowed clients to.
 
-    def load_module(self):
+        Always the audio server's own unix socket. A TCP listener would be
+        open to every other user account on this machine -- loopback TCP has
+        no owner check -- and PipeWire's ``module-native-protocol-tcp`` has no
+        way to restrict one: see ``clear_modules`` for why its cookie option
+        is not an answer either.
+        """
+        socket_path = pulse.native_socket()
+        if not os.path.exists(socket_path):
+            raise RuntimeError(
+                f"PipeWire/Pulse socket not found at {socket_path}; "
+                "is the audio server running?"
+            )
+        return socket_path
+
+    def clear_modules(self):
+        """Make sure no native-protocol-tcp listener is loaded at all.
+
+        The receiver never loads one. An earlier version did, on loopback,
+        and such a module outlives the process that asked for it, so an
+        upgrade has to take it down rather than leave it open beside us.
+
+        Loading it without ``auth-anonymous=1`` is not a way to keep other
+        local users out: PipeWire's pulse server admits a client that
+        presents no valid cookie anyway, so the port would be open to anyone
+        with a login on this machine regardless of the allowlist.
+        """
         for module in pulse.modules_of("module-native-protocol-tcp"):
             util.pactl(["unload-module", module["id"]], check=False)
-        proc = util.pactl(["load-module", "module-native-protocol-tcp", *self._module_args()])
-        self.module_id = proc.stdout.strip()
-        return self.module_id
-
-    def unload_module(self):
-        if self.module_id:
-            util.pactl(["unload-module", self.module_id], check=False)
-            self.module_id = None
+        self.module_id = None
 
     def start_proxy(self):
-        if self.allow_mode != "specific":
-            return
         listen_host = self.listen or "0.0.0.0"
         self.proxy = proxy.TcpProxy(
             listen_host,
             self.port,
-            "127.0.0.1",
-            self.internal_port,
-            allowed=self.allowed_ips,
+            self.backend(),
+            allowed=None if self.allow_mode == "all" else self.allowed_ips,
         )
         self.proxy.start()
 
@@ -107,7 +104,7 @@ class Receiver:
         self.publisher = None
 
     def start(self):
-        self.load_module()
+        self.clear_modules()
         self.start_proxy()
         self.start_publisher()
         self.announce()
@@ -122,6 +119,10 @@ class Receiver:
         """
         state.write(self.port, self.allow_mode, self.allowed_ips)
 
+    def _listener_down(self):
+        """True when we are not actually serving what we claim to serve."""
+        return self.proxy is None
+
     def reload(self):
         """Pick up config changes made while the receiver is running.
 
@@ -135,9 +136,9 @@ class Receiver:
         before_allowed = list(self.allowed_ips)
         self.load_settings()
         changed = self._listener_key() != before_key
-        # ``module_id`` is None when a previous reload failed part way through,
-        # which leaves nothing listening: rebuild then too.
-        if changed or self.module_id is None:
+        # A previous reload may have failed part way through and left nothing
+        # listening: rebuild then too.
+        if changed or self._listener_down():
             print(
                 "[omarchy-cast] configuration changed, reloading"
                 if changed
@@ -146,7 +147,6 @@ class Receiver:
             )
             self.stop_proxy()
             self.stop_publisher()
-            self.unload_module()
             self.start()
             return True
         if self.allowed_ips == before_allowed:
@@ -174,10 +174,15 @@ class Receiver:
     def announce(self):
         """Log what the receiver accepts, and warn when that is everything."""
         where = self.listen or "all interfaces"
+        print(
+            f"[omarchy-cast] audio server reached over {pulse.native_socket()}; "
+            "no TCP port of its own",
+            flush=True,
+        )
         if self.allow_mode == "specific":
             print(
                 f"[omarchy-cast] receiving on {where}:{self.port} as '{self.name}' "
-                f"(auth={self.auth}, allowed hosts: {len(self.allowed_ips)})",
+                f"(allowed hosts: {len(self.allowed_ips)})",
                 flush=True,
             )
             for ip in self.allowed_ips:
@@ -191,30 +196,25 @@ class Receiver:
                     file=sys.stderr,
                     flush=True,
                 )
-            elif self.auth == "anonymous":
+            else:
                 print(
                     "[omarchy-cast] note: allowed hosts are identified by source IP "
-                    "only (auth=anonymous). Use cookie auth if you need more than "
-                    "that.",
+                    "only. That is a LAN trust decision, not authentication.",
                     file=sys.stderr,
                     flush=True,
                 )
         else:
             print(
                 f"[omarchy-cast] receiving on {where}:{self.port} as '{self.name}' "
-                f"(auth={self.auth}, allow_mode=all)",
+                f"(allow_mode=all)",
                 flush=True,
             )
             print(
                 "[omarchy-cast] warning: allow_mode is 'all', so every client that "
-                "can reach the listener may cast to this host"
-                + (
-                    " with unrestricted access to the audio server"
-                    if self.auth == "anonymous"
-                    else ""
-                )
-                + ". Restrict it again with 'omarchy-cast allow mode specific', set "
-                "'listen' to a LAN address, or restrict the port with a firewall.",
+                "can reach the listener may cast to this host with unrestricted "
+                "access to the audio server. Restrict it again with "
+                "'omarchy-cast allow mode specific', set 'listen' to a LAN address, "
+                "or restrict the port with a firewall.",
                 file=sys.stderr,
                 flush=True,
             )
@@ -223,7 +223,12 @@ class Receiver:
         self.running = False
 
     def run(self):
-        self.start()
+        try:
+            self.start()
+        except Exception as exc:
+            # Nothing is listening, which refuses audio rather than serving it
+            # unguarded. The loop below retries.
+            print(f"[omarchy-cast] start failed: {exc}", file=sys.stderr, flush=True)
         signal.signal(signal.SIGTERM, self._stop)
         signal.signal(signal.SIGINT, self._stop)
         try:
@@ -244,7 +249,7 @@ class Receiver:
             state.clear()
             self.stop_publisher()
             self.stop_proxy()
-            self.unload_module()
+            self.clear_modules()
 
 
 def run(port=None, name=None):
