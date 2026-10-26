@@ -33,7 +33,10 @@ def discover(timeout=6):
             continue
         txt = ";".join(parts[9:])
         props = _parse_txt(txt)
+        # Published by the other host, so it is whatever that host chose:
+        # keep it printable and bounded before it reaches a list or a label.
         name = props.get("name") or service
+        name = "".join(c for c in name if c.isprintable())[:64] or service
         entry = {
             "name": name,
             "service": service,

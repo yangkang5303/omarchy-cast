@@ -14,13 +14,11 @@ Cast audio from one computer to another on your local network — like AirPlay, 
 
 Omarchy Cast turns any PipeWire host on your LAN into a selectable audio output of another host. On the receiving machine it advertises itself with mDNS; on the sending machine it appears as a normal output device (`Cast: <host>`), so you can route a single app or all system audio to the other computer with one command.
 
-- Lossless PCM over the LAN (~**1.5 Mbit/s**, ≈0.15% of a gigabit link)
+- Lossless PCM over the LAN (~**1.5 Mbit/s**, ≈662 MiB/hour)
 - Low latency (~1–3 ms on a wired LAN)
 - mDNS auto-discovery — no IP addresses to remember
 - Receives audio only from hosts you pick, by default
-- CLI plus a GTK4 graphical panel
-- An Omarchy bar widget (shell plugin) as a thin front end over the CLI
-- No configuration files to hand-edit
+- A CLI, a GTK4 panel, and an Omarchy bar widget over the same commands
 
 ### Screenshots
 
@@ -34,16 +32,15 @@ Omarchy bar widget (left-click the speaker icon) and the standalone GTK4 panel:
 
 ```
 sender                                   receiver
-┌──────────────────────────┐             ┌──────────────────────────┐
-│ app ─▶ omarchy_cast_<h>  │  TCP/4713   │ pipewire-pulse           │
-│   (module-tunnel-sink)   ├────────────▶│ (module-native-...-tcp)  │
-│                          │             │        │                 │
-└──────────────────────────┘             └────────┼─────────────────┘
-                                                  ▼
-                                        receiver's default output
+┌──────────────────────────┐             ┌───────────────────────────────┐
+│ app ─▶ omarchy_cast_<h>  │  TCP/4713   │ allowlist proxy               │
+│   (module-tunnel-sink)   ├────────────▶│      │ unix socket            │
+│                          │             │      ▼                        │
+└──────────────────────────┘             │ pipewire-pulse ─▶ default out │
+                                         └───────────────────────────────┘
 ```
 
-- The **receiver** loads PipeWire's `module-native-protocol-tcp` and publishes an mDNS service (`_omarchycast._tcp`, default port `4713`).
+- The **receiver** publishes an mDNS service (`_omarchycast._tcp`, default port `4713`) and serves that port itself, forwarding only allowed source IPs to PipeWire over its unix socket. PipeWire is given no TCP port of its own — see [Security](#security).
 - The **sender** discovers it with `avahi-browse` and loads `module-tunnel-sink`, creating a virtual output device named `omarchy_cast_<host>`.
 - Audio you send to that device is streamed over TCP and played on the receiver's default output.
 
@@ -159,7 +156,7 @@ omarchy-cast gui
 
 ### Omarchy integration
 
-The installer does not modify your desktop config. To add the panel to the Omarchy menu and a keybinding, see the commands below (these are optional, manual edits).
+The installer does not touch your desktop config. These are optional, manual edits.
 
 Menu entry — add to `~/.config/omarchy/extensions/omarchy-menu.jsonc`:
 
@@ -233,6 +230,7 @@ the program cannot make sense of never opens the receiver up.
 - Allowed hosts are identified by source IP only. That is a LAN trust decision, not authentication: it does not survive an attacker who can spoof or take over an allowed address. Restrict the port with a host firewall if your LAN is not a trust boundary you are comfortable with.
 - **Cookie auth is not offered, because PipeWire does not enforce it.** Earlier versions documented `auth: "cookie"` as the stronger option. Loading `module-native-protocol-tcp` without `auth-anonymous=1` does not restrict anything on PipeWire's pulse server: a client presenting a forged cookie, or no cookie file at all, is still admitted and can list and control sinks. The `auth` key is gone rather than left in place as a setting that reads like a protection and is not one.
 - `allow_mode: "all"` opts out of the restriction entirely: any client that can reach TCP `4713` — **not** just private address ranges — gets unrestricted access to your audio server. The receiver logs a warning for as long as it runs in that mode. If you want it, pair it with `listen` set to a single LAN address or a host firewall on TCP `4713`.
+- A host name comes from the other machine's mDNS record, so it is whatever that machine published. It is kept printable and bounded, and the device description built from it drops quotes and backslashes, because it ends up inside a `sink_properties=` argument that pactl parses.
 - Keep the receiver off on untrusted networks; it is off until you enable it.
 
 ### Troubleshooting
@@ -244,7 +242,6 @@ the program cannot make sense of never opens the receiver up.
 | A host you removed can still cast to you | An older receiver is still running: `omarchy-cast status` shows the running build and what it enforces. Restart it (`omarchy-cast stop-receiver && omarchy-cast start-receiver`) |
 | `pactl: command not found` | Install PipeWire/pulse tooling |
 | GUI does not start | Install `python-gobject` |
-| Device name shows `Cast:` only | Older PipeWire mishandles spaces; this version encodes spaces as non-breaking spaces — upgrade to the latest release |
 | Audio stutters | Check Wi‑Fi signal; a wired LAN is recommended for lossless PCM |
 
 ### Uninstall
@@ -253,19 +250,12 @@ the program cannot make sense of never opens the receiver up.
 omarchy-cast uninstall      # removes launcher, service, desktop entry, program files
 ```
 
-### Bandwidth reference
-
-Lossless `s16le` stereo @ 48 kHz uses about **1.5 Mbit/s** (≈662 MiB/hour). Measured overhead is under 1%.
-
 ### Tests
 
-The allowlist default, its TCP-layer enforcement, the live reload of a running
-receiver, and the upgrade path (an older receiver gets restarted, and is
-reported rather than assumed away) are covered by tests that need only the
-standard library:
+Standard library only, no network and no audio server needed:
 
 ```bash
-python3 tests/test_allowlist.py        # or: python3 -m unittest discover -s tests -t .
+python3 tests/test_allowlist.py
 ```
 
 ---
@@ -276,13 +266,11 @@ python3 tests/test_allowlist.py        # or: python3 -m unittest discover -s tes
 
 Omarchy Cast 能把局域网内任意一台 PipeWire 主机变成另一台主机的可选音频输出设备。接收端通过 mDNS 广播自身；发送端会出现一个普通输出设备（`Cast: <主机名>`），一条命令即可把单个应用或全部系统声音投送到另一台电脑。
 
-- 局域网内无损 PCM（约 **1.5 Mbit/s**，千兆链路占比约 0.15%）
+- 局域网内无损 PCM（约 **1.5 Mbit/s**，约 662 MiB/小时）
 - 低延迟（有线局域网约 1–3 ms）
 - mDNS 自动发现，无需记 IP
 - 默认只接收你指定的主机发来的音频
-- 提供命令行工具与 GTK4 图形面板
-- 提供 Omarchy 状态栏小组件（shell 插件），作为命令行工具的轻量前端
-- 无需手工编辑配置文件
+- 命令行、GTK4 面板、Omarchy 状态栏小组件共用同一套命令
 
 ### 截图
 
@@ -296,16 +284,15 @@ Omarchy 状态栏小组件（左键点击喇叭图标）与独立的 GTK4 面板
 
 ```
 发送端                                    接收端
-┌──────────────────────────┐             ┌──────────────────────────┐
-│ 应用 ─▶ omarchy_cast_<h> │  TCP/4713   │ pipewire-pulse           │
-│   (module-tunnel-sink)   ├────────────▶│ (module-native-...-tcp)  │
-│                          │             │        │                 │
-└──────────────────────────┘             └────────┼─────────────────┘
-                                                  ▼
-                                        接收端的默认输出设备
+┌──────────────────────────┐             ┌───────────────────────────────┐
+│ 应用 ─▶ omarchy_cast_<h> │  TCP/4713   │ 白名单代理                    │
+│   (module-tunnel-sink)   ├────────────▶│      │ unix socket            │
+│                          │             │      ▼                        │
+└──────────────────────────┘             │ pipewire-pulse ─▶ 默认输出    │
+                                         └───────────────────────────────┘
 ```
 
-- **接收端**加载 PipeWire 的 `module-native-protocol-tcp`，并通过 mDNS 发布服务（`_omarchycast._tcp`，默认端口 `4713`）。
+- **接收端**通过 mDNS 发布服务（`_omarchycast._tcp`，默认端口 `4713`）并自己监听该端口，只把白名单内的来源 IP 转发给 PipeWire 的 unix socket。PipeWire 自身不开任何 TCP 端口，详见[安全](#安全)。
 - **发送端**用 `avahi-browse` 发现它，加载 `module-tunnel-sink`，生成名为 `omarchy_cast_<主机>` 的虚拟输出设备。
 - 发往该设备的音频经 TCP 传输，在接收端由默认输出设备播放。
 
@@ -485,6 +472,7 @@ omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 - 已允许的主机仅按来源 IP 识别。这是局域网层面的信任判断，不是身份认证：无法抵御能伪造或接管已允许地址的攻击者。若你的局域网不构成可接受的信任边界，请用主机防火墙限制该端口。
 - **不提供 cookie 认证，因为 PipeWire 并不执行它。** 旧版本曾把 `auth: "cookie"` 写成更强的选项。实测表明，加载 `module-native-protocol-tcp` 时不带 `auth-anonymous=1` 并不带来任何限制：携带伪造 cookie、甚至完全没有 cookie 文件的客户端同样能连上，并可列出和控制 sink。因此 `auth` 配置项被直接移除，而不是留下一个看起来像防护、实际不是的开关。
 - `allow_mode: "all"` 会完全放开该限制：任何能连到 TCP `4713` 的客户端都将获得对你音频服务的无限制访问，**并不限于私网地址段**。处于该模式期间接收端会持续输出警告。确有需要时，请把 `listen` 设为单个局域网地址，或用主机防火墙限制 TCP `4713`。
+- 主机名来自对方机器的 mDNS 记录，内容完全由对方决定。本程序会将其限制为可打印字符并截断，且由它生成的设备描述会去掉引号与反斜杠——因为该字符串最终会进入由 pactl 解析的 `sink_properties=` 参数。
 - 在不可信网络中请关闭接收端；接收端在你启用之前不会运行。
 
 ### 常见问题
@@ -496,7 +484,6 @@ omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 | 已移除的主机仍能向本机投送 | 说明仍有旧版本的接收端在运行：用 `omarchy-cast status` 查看运行中的版本及其实际执行的列表，然后重启（`omarchy-cast stop-receiver && omarchy-cast start-receiver`） |
 | `pactl: command not found` | 安装 PipeWire/PulseAudio 工具 |
 | 图形界面无法启动 | 安装 `python-gobject` |
-| 设备名只显示 `Cast:` | 旧版 PipeWire 对空格处理有问题；本版本已将空格编码为不换行空格，升级到最新版即可 |
 | 声音卡顿 | 检查 Wi‑Fi 信号；无损 PCM 建议使用有线局域网 |
 
 ### 卸载
@@ -505,15 +492,10 @@ omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 omarchy-cast uninstall      # 移除启动器、服务、桌面项与程序文件
 ```
 
-### 带宽参考
-
-无损 `s16le` 立体声 @ 48 kHz 约 **1.5 Mbit/s**（约 662 MiB/小时），实测协议开销低于 1%。
-
 ### 测试
 
-允许列表的默认值、其在 TCP 层的实际拦截效果、运行中接收端的热加载，以及升级路径
-（旧接收端会被重启，且会被明确上报而非默认忽略）均有测试覆盖，仅依赖标准库：
+仅依赖标准库，不需要网络和音频服务：
 
 ```bash
-python3 tests/test_allowlist.py        # 或：python3 -m unittest discover -s tests -t .
+python3 tests/test_allowlist.py
 ```

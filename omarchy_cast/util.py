@@ -14,15 +14,9 @@ def have(cmd):
     return shutil.which(cmd) is not None
 
 
-def run(cmd, timeout=20, check=True, input_text=None):
+def run(cmd, timeout=20, check=True):
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            input=input_text,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         raise CommandError(cmd, 127, f"{cmd[0]}: not found")
     except subprocess.TimeoutExpired:

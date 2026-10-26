@@ -31,6 +31,7 @@ from omarchy_cast import (  # noqa: E402
     cli,
     config,
     proxy,
+    pulse,
     receiver,
     service,
     state,
@@ -589,6 +590,30 @@ class ReceiverReloadTests(unittest.TestCase):
         rcv.load_settings()
         self.assertEqual(rcv.port, 9999)
         self.assertEqual(rcv.name, "fixed")
+
+
+class RemoteNameTests(unittest.TestCase):
+    """A host name arrives from another machine's mDNS record, not from us."""
+
+    def test_quotes_and_newlines_do_not_reach_the_property_list(self):
+        """It lands in pactl's sink_properties=, which parses what it gets."""
+        description = pulse._description('evil" device.class="sink" x="')
+        self.assertNotIn('"', description)
+        self.assertNotIn("\n", description)
+        self.assertNotIn(" ", description)  # one token, spaces are non-breaking
+
+    def test_control_characters_are_dropped(self):
+        self.assertEqual(pulse._description("a\nb\x00c"), "Cast:\u00a0abc")
+
+    def test_the_description_is_bounded(self):
+        self.assertLessEqual(len(pulse._description("x" * 5000)), 64)
+
+    def test_an_ordinary_name_survives(self):
+        self.assertEqual(pulse._description("Living Room"), "Cast:\u00a0Living\u00a0Room")
+
+    def test_the_sink_name_stays_an_identifier(self):
+        sink = pulse.sink_name_for('../../etc/passwd "x"')
+        self.assertTrue(sink.replace("_", "").isalnum(), sink)
 
 
 class ReceiverStateTests(unittest.TestCase):

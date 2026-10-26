@@ -69,7 +69,6 @@ class TcpProxy:
         self._live = {}
         self._server = None
         self._accept_thread = None
-        self._threads = []
         self._running = False
 
     @property
@@ -178,12 +177,9 @@ class TcpProxy:
                 client, addr = self._server.accept()
             except OSError:
                 break
-            thread = threading.Thread(
+            threading.Thread(
                 target=self._handle, args=(client, addr), daemon=True
-            )
-            thread.start()
-            self._threads = [t for t in self._threads if t.is_alive()]
-            self._threads.append(thread)
+            ).start()
 
     def start(self):
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

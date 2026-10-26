@@ -20,7 +20,6 @@ class Receiver:
         # config file, now and on every later re-read.
         self.port_override = int(port) if port else None
         self.name_override = name or None
-        self.module_id = None
         self.publisher = None
         self.proxy = None
         self.running = True
@@ -74,7 +73,6 @@ class Receiver:
         """
         for module in pulse.modules_of("module-native-protocol-tcp"):
             util.pactl(["unload-module", module["id"]], check=False)
-        self.module_id = None
 
     def _proxy_allowlist(self):
         """What the proxy should filter on, which is nothing in "all" mode.

@@ -96,11 +96,6 @@ def allow_mode():
     return load()["allow_mode"]
 
 
-def allowed_ips():
-    """Return the current list of allowed remote IPs."""
-    return list(load().get("allowed_ips", []))
-
-
 def set_allow_mode(mode):
     """Set allow mode to 'specific' (allowlist, the default) or 'all'."""
     return set_value("allow_mode", mode)

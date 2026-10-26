@@ -287,11 +287,6 @@ def cmd_gui(args):
     return gui.main()
 
 
-def cmd_version(args):
-    print(__version__)
-    return 0
-
-
 def build_parser():
     parser = argparse.ArgumentParser(prog="omarchy-cast", description="Play audio on another computer on your LAN.")
     parser.add_argument("--version", action="version", version=__version__)

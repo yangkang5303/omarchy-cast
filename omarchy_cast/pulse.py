@@ -60,8 +60,22 @@ def sink_name_for(name):
     return SINK_PREFIX + slug(name)
 
 
-def _nbsp(text):
-    return text.replace(" ", "\u00a0")
+def _description(name):
+    """A sink description built from a name we did not choose.
+
+    ``name`` comes from another host's mDNS TXT record, so it is whatever
+    that host decided to publish. It ends up inside pactl's
+    ``sink_properties=`` argument, which is a parsed property list: a quote
+    or a newline in there does not stay inside the value. Only printable
+    characters survive, quotes and backslashes are dropped, spaces become
+    non-breaking ones so the value stays a single token, and the whole thing
+    is capped.
+    """
+    dropped = '"' + "\\"
+    cleaned = "".join(
+        char for char in name if char.isprintable() and char not in dropped
+    )
+    return ("Cast: " + cleaned[:48]).replace(" ", "\u00a0")
 
 
 def tunnel_sinks():
@@ -78,7 +92,7 @@ def connect(address, port, name, set_default=False, move_streams=False):
     for module in modules_of("module-tunnel-sink"):
         if f"sink_name={sink}" in module.get("args", ""):
             util.pactl(["unload-module", module["id"]], check=False)
-    description = _nbsp(f"Cast: {name}")
+    description = _description(name)
     args = [
         "load-module",
         "module-tunnel-sink",
@@ -111,13 +125,6 @@ def disconnect_all():
         util.pactl(["unload-module", module["id"]], check=False)
         count += 1
     return count
-
-
-def connected_names():
-    result = {}
-    for sink, module in tunnel_sinks().items():
-        result[sink] = module
-    return result
 
 
 def move_all_streams(sink):
