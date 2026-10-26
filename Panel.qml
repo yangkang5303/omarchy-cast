@@ -26,6 +26,10 @@ Panel {
   property string allowMode: "specific"
   property var allowedIps: []
   property bool allowBusy: false
+  // Set when the receiver that is running is an older build: it keeps the
+  // allowlist it read at startup, so what is shown here is not what it
+  // enforces until it is restarted.
+  property bool receiverStale: false
 
   property string listOutput: ""
 
@@ -169,6 +173,7 @@ Panel {
         try { data = JSON.parse(String(text)) } catch (e) { data = {} }
         root.allowMode = data.mode === "all" ? "all" : "specific"
         root.allowedIps = data.ips || []
+        root.receiverStale = data.stale === true
       }
     }
   }
@@ -321,6 +326,18 @@ Panel {
                 : "")
             : "Any host that can reach this machine may cast audio to it."
           color: Qt.darker(root.contentForeground, 1.6)
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        // An older receiver is still running, so the list above is not yet
+        // what it enforces. Restarting it is the only way to apply it.
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          visible: root.receiverStale
+          text: "An older receiver is still running and keeps the allowlist it started with. Toggle receiving off and on to apply these settings."
+          color: root.contentForeground
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.bodySmall
         }

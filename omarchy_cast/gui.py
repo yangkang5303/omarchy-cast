@@ -6,7 +6,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # noqa: E402
 
 from . import APP_ID, APP_NAME  # noqa: E402
-from . import config, discovery, pulse, service, util  # noqa: E402
+from . import config, discovery, pulse, service, state, util  # noqa: E402
 
 
 def run_async(func, on_done):
@@ -127,23 +127,41 @@ class CastWindow(Gtk.ApplicationWindow):
         self._update_allow_hint()
         return frame
 
+    def _stale_receiver_note(self):
+        """Warn when an older receiver is running with the allowlist it cached.
+
+        Until it is restarted, these settings are not what it enforces.
+        """
+        try:
+            active = service.is_active()
+        except util.CommandError:
+            active = False
+        if not state.stale_receiver(active=active):
+            return ""
+        return (
+            " An older receiver is still running and keeps the allowlist it "
+            "started with: turn receiving off and on to apply these settings."
+        )
+
     def _update_allow_hint(self):
         """Spell out what the current allowlist state means for incoming audio."""
+        stale = self._stale_receiver_note()
         if self.cfg["allow_mode"] != "specific":
             self.allow_hint.set_text(
                 "Any host that can reach this machine may cast audio to it. "
-                "Turn this on to accept only the hosts you pick."
+                "Turn this on to accept only the hosts you pick." + stale
             )
             return
         count = len(self.cfg.get("allowed_ips", []))
         if count:
             self.allow_hint.set_text(
                 f"Only the {count} allowed host(s) may cast audio to this machine."
+                + stale
             )
         else:
             self.allow_hint.set_text(
                 "No host is allowed yet, so every incoming connection is refused. "
-                'Pick the hosts you trust with "Add to allow" below.'
+                'Pick the hosts you trust with "Add to allow" below.' + stale
             )
 
     def _is_allowed(self, ip):

@@ -6,6 +6,7 @@ from . import config
 from . import discovery
 from . import proxy
 from . import pulse
+from . import state
 from . import util
 
 # How often the running receiver re-reads the config file.
@@ -110,6 +111,16 @@ class Receiver:
         self.start_proxy()
         self.start_publisher()
         self.announce()
+        self.publish_state()
+
+    def publish_state(self):
+        """Record what is being enforced, for 'status' and the allow commands.
+
+        The CLI reads this to tell whether the receiver that is running is
+        this build -- an older one keeps the allowlist it cached at startup,
+        and only a restart reaches it.
+        """
+        state.write(self.port, self.allow_mode, self.allowed_ips)
 
     def reload(self):
         """Pick up config changes made while the receiver is running.
@@ -225,10 +236,12 @@ class Receiver:
                     # which refuses audio rather than letting a stale
                     # allowlist stand. Say so and keep trying.
                     print(f"[omarchy-cast] reload failed: {exc}", file=sys.stderr, flush=True)
+                self.publish_state()
                 if self.publisher is None or self.publisher.poll() is not None:
                     self.start_publisher()
         finally:
             print("[omarchy-cast] stopping", flush=True)
+            state.clear()
             self.stop_publisher()
             self.stop_proxy()
             self.unload_module()

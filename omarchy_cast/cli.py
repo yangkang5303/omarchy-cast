@@ -8,6 +8,7 @@ from . import discovery
 from . import pulse
 from . import receiver
 from . import service
+from . import state
 from . import util
 
 
@@ -82,17 +83,39 @@ def cmd_disconnect(args):
     return 1
 
 
+def _format_allowed(ips):
+    return ", ".join(ips) if ips else "none (all refused)"
+
+
 def cmd_status(args):
     cfg = config.load()
     connected = pulse.tunnel_sinks()
     allowed = list(cfg.get("allowed_ips", []))
+    live = state.read()
+    active = service.is_active()
     print(f"this host      : {cfg['display_name']}")
     print(f"receiver port  : {cfg['port']}")
-    print(f"receiver active: {'yes' if service.is_active() else 'no'}")
+    print(f"receiver active: {'yes' if active else 'no'}")
     print(f"receiver boot  : {'enabled' if service.is_enabled() else 'disabled'}")
+    if live and not state.is_current(live):
+        print(
+            f"receiver build : {live.get('version', 'unknown')} running, "
+            f"{__version__} installed -- restart to apply config changes"
+        )
+    elif active and not live:
+        print(
+            f"receiver build : older build running, {__version__} installed "
+            "-- restart to apply config changes"
+        )
     print(f"allow mode     : {cfg['allow_mode']}")
     if cfg["allow_mode"] == "specific":
-        print(f"allowed hosts  : {', '.join(allowed) if allowed else 'none (all refused)'}")
+        print(f"allowed hosts  : {_format_allowed(allowed)}")
+        # What the live process enforces: the config only once it has read it
+        # back, so a difference means an older receiver is still running.
+        if live and live.get("allow_mode") != cfg["allow_mode"]:
+            print(f"enforcing now  : allow mode {live.get('allow_mode')}")
+        elif live and live.get("allowed_ips") != allowed:
+            print(f"enforcing now  : {_format_allowed(live.get('allowed_ips') or [])}")
     print(f"default sink   : {pulse.default_sink() or '-'}")
     print("tunnel sinks   :")
     if connected:
@@ -140,12 +163,25 @@ def cmd_config(args):
 
 def cmd_allow_list(args):
     cfg = config.load()
+    live = state.read()
     data = {
         "mode": cfg["allow_mode"],
         "ips": list(cfg.get("allowed_ips", [])),
+        # What the receiver that is running has actually applied, so a front
+        # end can show the difference instead of implying there is none.
+        "stale": bool(_stale_receiver_warning()),
+        "live": None
+        if not live
+        else {
+            "version": live.get("version"),
+            "current": state.is_current(live),
+            "mode": live.get("allow_mode"),
+            "ips": list(live.get("allowed_ips") or []),
+        },
     }
     if args.json:
         print(json.dumps(data, indent=2))
+        _warn_stale_receiver()
         return 0
     print(f"mode: {data['mode']}")
     if data["ips"]:
@@ -155,16 +191,53 @@ def cmd_allow_list(args):
         print("  (no allowed IPs: every incoming connection is refused)")
     else:
         print("  (no allowed IPs; mode is 'all', so any reachable host may cast)")
+    _warn_stale_receiver()
     return 0
 
 
-def _apply_note():
-    """Say when the change reaches the receiver that is already running."""
+def _stale_build_warning(version):
+    """What to say when the receiver that is running cannot apply the change.
+
+    A receiver started by an older build -- after an upgrade, before anything
+    restarted it -- keeps the allowlist it read at startup, so the change sits
+    in the config file and the live process goes on enforcing the old one.
+    """
+    running = f"version {version}" if version else "an older build"
+    return (
+        f"warning: the running receiver is {running}, which keeps the allowlist "
+        "it read at startup, so this change does NOT reach it. Restart it to "
+        "apply: omarchy-cast stop-receiver && omarchy-cast start-receiver"
+    )
+
+
+def _stale_receiver_warning():
+    """The warning to show when the live receiver cannot apply a config change.
+
+    None when the receiver that is running is this build, or when nothing is
+    running at all.
+    """
     try:
         active = service.is_active()
     except util.CommandError:
-        return  # no systemctl: the change still stands in the config
-    if active:
+        active = False  # no systemctl: nothing of ours is being managed here
+    if not state.stale_receiver(active=active):
+        return None
+    live = state.read()
+    return _stale_build_warning(live.get("version") if live else None)
+
+
+def _warn_stale_receiver():
+    warning = _stale_receiver_warning()
+    if warning:
+        print(warning, file=sys.stderr)
+    return bool(warning)
+
+
+def _apply_note():
+    """Say whether the change reaches the receiver that is already running."""
+    if _warn_stale_receiver():
+        return
+    if state.read():
         print(f"the running receiver applies this within {receiver.POLL_INTERVAL:g}s")
 
 

@@ -66,6 +66,11 @@ omarchy-cast allow add 192.168.1.10   # let that host cast to you
 
 `./install.sh --enable` does the first two steps at once.
 
+Re-running `./install.sh` to upgrade **restarts a receiver that is already
+running**, so the version you just installed is the one enforcing your config.
+Without that, the old process would keep serving the allowlist it read at
+startup. `omarchy-cast status` shows which build is running.
+
 The receiver accepts audio only from hosts you have allowed, so until you add
 one it refuses every connection — see [Receiving audio](#receiving-audio).
 
@@ -223,6 +228,7 @@ the program cannot make sense of never opens the receiver up.
 
 - **The receiver is restricted by default.** `allow_mode` defaults to `"specific"` and `allowed_ips` starts empty, so a new install accepts no incoming audio at all until you add the hosts you trust. The receiver binds PipeWire's listener to loopback and serves the public port with a small TCP proxy that forwards only the source IPs in `allowed_ips`; every other source is closed before it reaches the audio server. This is enforced at the TCP layer, independent of `auth`. Manage it with `omarchy-cast allow ...`, the panel switch, or the GTK switch.
 - **Allowlist changes apply to the running receiver.** Every front end — `omarchy-cast allow`, the bar panel, the GTK window — writes the same config file, and the receiver re-reads it once a second: a removed host stops being allowed there and then, and its open connection is dropped, so what the panel shows is what the receiver enforces. No restart, and no window in which a host you just removed can still reach the audio server.
+- **Only a receiver of the installed build does that.** One started by an older build keeps the allowlist it cached at startup, so an upgrade must replace the running process, not just the files on disk. Re-running the installer restarts it for you; the receiver also reports which build it is, so `omarchy-cast allow add/remove` tells you to restart instead of claiming a live apply when an older process is still running, and `omarchy-cast status` prints the running build next to the installed one and what that process is actually enforcing.
 - A value of `allow_mode` that the program cannot parse is treated as `"specific"`: a missing key, a typo, a stale value, or an unreadable config file leaves the receiver restricted rather than open.
 - PipeWire's `module-native-protocol-tcp` accepts only `port`, `listen`, and `auth-anonymous` — it has **no IP allowlist** of its own, which is why the proxy above exists.
 - Allowed hosts are identified by source IP only. That is a LAN trust decision, not authentication: it does not survive an attacker who can spoof or take over an allowed address. Use `"cookie"` auth if you need more (all hosts must then share the same PipeWire/Pulse cookie file).
@@ -235,6 +241,7 @@ the program cannot make sense of never opens the receiver up.
 |---------|-----|
 | `No hosts found` | Receiver not running on the other host (`enable-receiver`), or `avahi-daemon` down, or a firewall blocks UDP `5353` / TCP `4713` |
 | Host is listed but `connect` plays nothing | The receiving host has not allowed you: run `omarchy-cast allow add <your ip>` there (or use its allow button in the panel), then try again |
+| A host you removed can still cast to you | An older receiver is still running: `omarchy-cast status` shows the running build and what it enforces. Restart it (`omarchy-cast stop-receiver && omarchy-cast start-receiver`) |
 | `pactl: command not found` | Install PipeWire/pulse tooling |
 | GUI does not start | Install `python-gobject` |
 | Device name shows `Cast:` only | Older PipeWire mishandles spaces; this version encodes spaces as non-breaking spaces — upgrade to the latest release |
@@ -252,8 +259,10 @@ Lossless `s16le` stereo @ 48 kHz uses about **1.5 Mbit/s** (≈662 MiB/hour). Me
 
 ### Tests
 
-The allowlist default and its TCP-layer enforcement are covered by tests that
-need only the standard library:
+The allowlist default, its TCP-layer enforcement, the live reload of a running
+receiver, and the upgrade path (an older receiver gets restarted, and is
+reported rather than assumed away) are covered by tests that need only the
+standard library:
 
 ```bash
 python3 tests/test_allowlist.py        # or: python3 -m unittest discover -s tests -t .
@@ -319,6 +328,10 @@ omarchy-cast allow add 192.168.1.10   # 允许该主机向本机投送
 
 `./install.sh --enable` 可一步完成前两步。
 
+重新执行 `./install.sh` 升级时，**会重启正在运行的接收端**，使刚安装的版本成为真正
+执行配置的那个进程；否则旧进程会继续使用它启动时读到的允许列表。运行中的版本可用
+`omarchy-cast status` 查看。
+
 接收端只接受你已允许的主机，因此在添加之前会拒绝所有连接，详见[接收音频](#接收音频)。
 
 安装位置：
@@ -380,9 +393,9 @@ omarchy-cast allow mode all      # 放开限制：任意可达主机均可投送
 ```
 
 在 `specific` 模式下，接收端会拒绝所有不在允许列表中的来源 IP，未获允许的主机无法
-向本机投送音频。允许列表在接收端启动时读取，因此修改后需重启才能生效
-（`omarchy-cast stop-receiver && omarchy-cast start-receiver`，或切换面板开关——
-面板会自动重启接收端）。
+向本机投送音频。运行中的接收端每秒重读一次配置，因此添加或移除主机无需重启即可生效：
+被移除的主机无法再新建连接，已建立的连接也会被切断。修改 `allow_mode`、`port`、
+`listen`、`auth` 同样如此，接收端会重新绑定监听。
 
 在状态栏面板和 GTK4 窗口中，可直接从发现的主机列表里挑选：每台主机旁有一个允许按钮，
 “仅允许指定主机”开关默认开启。
@@ -466,6 +479,8 @@ omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 ### 安全
 
 - **接收端默认受限。** `allow_mode` 默认为 `"specific"`，`allowed_ips` 初始为空，因此新安装的接收端在你添加可信主机之前完全不接受任何入站音频。此模式下接收端把 PipeWire 的监听绑定到回环地址，并在公共端口上运行一个小的 TCP 代理，只转发 `allowed_ips` 中的来源 IP；其余来源在到达音频服务之前即被关闭。该限制在 TCP 层生效，与 `auth` 无关。可通过 `omarchy-cast allow ...`、面板开关或 GTK 开关管理。
+- **允许列表的修改会作用于运行中的接收端。** `omarchy-cast allow`、状态栏面板、GTK 窗口写的都是同一份配置文件，而接收端每秒重读一次：被移除的主机当即失去许可，其已建立的连接也会被切断，面板上显示的就是接收端实际执行的。无需重启，也不存在“刚移除却仍能连上音频服务”的时间窗。
+- **只有与已安装版本一致的接收端才具备上述能力。** 由旧版本启动的进程会沿用它启动时缓存的允许列表，因此升级必须替换运行中的进程，而不只是替换磁盘上的文件。重新执行安装脚本会自动重启它；接收端还会上报自己的版本，因此在旧进程仍在运行时，`omarchy-cast allow add/remove` 会提示你重启，而不会声称已即时生效，`omarchy-cast status` 也会同时显示运行中与已安装的版本，以及该进程实际在执行的允许列表。
 - 无法解析的 `allow_mode` 一律按 `"specific"` 处理：键缺失、拼写错误、旧值、配置文件读不出来，接收端都保持受限而不会放开。
 - PipeWire 的 `module-native-protocol-tcp` 只接受 `port`、`listen` 与 `auth-anonymous`，自身**没有 IP 白名单**，这正是上述代理存在的原因。
 - 已允许的主机仅按来源 IP 识别。这是局域网层面的信任判断，不是身份认证：无法抵御能伪造或接管已允许地址的攻击者。若需更强的控制请使用 `"cookie"` 认证（此时所有主机需共享同一份 PipeWire/Pulse cookie 文件）。
@@ -477,7 +492,8 @@ omarchy-cast config --set allowed_ips 192.168.1.10,192.168.1.11
 | 现象 | 处理 |
 |------|------|
 | `No hosts found` | 对方接收端未运行（`enable-receiver`），或 `avahi-daemon` 未启动，或防火墙拦截了 UDP `5353` / TCP `4713` |
-| 列表里能看到主机，但 `connect` 后没有声音 | 接收端尚未允许你：在接收端执行 `omarchy-cast allow add <你的 IP>`，然后重启其接收端 |
+| 列表里能看到主机，但 `connect` 后没有声音 | 接收端尚未允许你：在接收端执行 `omarchy-cast allow add <你的 IP>`（或在面板中点该主机的允许按钮），然后重试 |
+| 已移除的主机仍能向本机投送 | 说明仍有旧版本的接收端在运行：用 `omarchy-cast status` 查看运行中的版本及其实际执行的列表，然后重启（`omarchy-cast stop-receiver && omarchy-cast start-receiver`） |
 | `pactl: command not found` | 安装 PipeWire/PulseAudio 工具 |
 | 图形界面无法启动 | 安装 `python-gobject` |
 | 设备名只显示 `Cast:` | 旧版 PipeWire 对空格处理有问题；本版本已将空格编码为不换行空格，升级到最新版即可 |
@@ -495,7 +511,8 @@ omarchy-cast uninstall      # 移除启动器、服务、桌面项与程序文�
 
 ### 测试
 
-允许列表的默认值与其在 TCP 层的实际拦截效果均有测试覆盖，仅依赖标准库：
+允许列表的默认值、其在 TCP 层的实际拦截效果、运行中接收端的热加载，以及升级路径
+（旧接收端会被重启，且会被明确上报而非默认忽略）均有测试覆盖，仅依赖标准库：
 
 ```bash
 python3 tests/test_allowlist.py        # 或：python3 -m unittest discover -s tests -t .
