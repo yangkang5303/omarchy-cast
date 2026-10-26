@@ -445,6 +445,63 @@ class ProxyEnforcementTests(unittest.TestCase):
             sock.sendall(b"pong")
             self.assertEqual(sock.recv(16), b"pong")
 
+    def hold_dial(self):
+        """Park every new connection in ``dial`` until the returned event is set.
+
+        That is the window the race lives in: the client has been accepted,
+        but its handler has not registered it as live yet.
+        """
+        entered, release = threading.Event(), threading.Event()
+        real_dial = proxy.dial
+
+        def held(backend, timeout=5):
+            entered.set()
+            release.wait(5)
+            return real_dial(backend, timeout)
+
+        proxy.dial = held
+        self.addCleanup(setattr, proxy, "dial", real_dial)
+        self.addCleanup(release.set)
+        return entered, release
+
+    def test_a_connection_accepted_before_stop_is_not_forwarded_after_it(self):
+        """The old proxy of an all -> specific switch must not leak a session.
+
+        A client accepted by the unfiltered proxy just before the switch used
+        to register itself after stop() had taken the connections to shut
+        down, and that proxy -- already replaced by the receiver -- went on
+        forwarding an unlisted host to the audio server.
+        """
+        entered, release = self.hold_dial()
+        port = self.start_proxy(None)  # "all" mode
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            self.assertTrue(entered.wait(5))
+            self.proxy.stop()
+            release.set()
+            try:
+                sock.sendall(b"ping")
+            except OSError:
+                pass
+            self.assertEqual(recv_until_closed(sock), b"")
+        self.assertEqual(self.proxy._live, {})
+
+    def test_a_connection_held_past_a_revocation_is_refused(self):
+        """Same window, but the allowlist is narrowed instead of the proxy stopped."""
+        entered, release = self.hold_dial()
+        port = self.start_proxy(["127.0.0.1"])
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            self.assertTrue(entered.wait(5))
+            self.proxy.set_allowed([])
+            self.proxy.drop_disallowed()
+            release.set()
+            try:
+                sock.sendall(b"ping")
+            except OSError:
+                pass
+            self.assertEqual(recv_until_closed(sock), b"")
+
 
 class ReceiverReloadTests(unittest.TestCase):
     """An allowlist edit has to reach the receiver that is already running.
@@ -536,6 +593,42 @@ class ReceiverReloadTests(unittest.TestCase):
         self.assertIsNotNone(rcv.proxy)
         self.assertIsNone(rcv.proxy.allowed)
         self.assertEqual(self.talk(port), b"ping")
+
+    def test_a_client_mid_handshake_does_not_survive_turning_the_allowlist_on(self):
+        """The reviewer's scenario, end to end through ``reload``.
+
+        An unlisted host is accepted by the unfiltered "all" proxy, and while
+        its handler is still dialing the audio server the owner turns the
+        allowlist on. The receiver replaces that proxy; the old one must not
+        then register the client and forward it anyway.
+        """
+        entered, release = threading.Event(), threading.Event()
+        real_dial = proxy.dial
+
+        def held(backend, timeout=5):
+            entered.set()
+            release.wait(5)
+            return real_dial(backend, timeout)
+
+        proxy.dial = held
+        self.addCleanup(setattr, proxy, "dial", real_dial)
+        self.addCleanup(release.set)
+
+        rcv, port = self.start_receiver(allow_mode="all", allowed_ips=[])
+        old_proxy = rcv.proxy
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(5)
+            self.assertTrue(entered.wait(5))
+            config.set_allow_mode("specific")  # nobody is allowed
+            self.assertTrue(rcv.reload())
+            self.assertIsNot(rcv.proxy, old_proxy)
+            release.set()
+            try:
+                sock.sendall(b"ping")
+            except OSError:
+                pass
+            self.assertEqual(recv_until_closed(sock), b"")
+        self.assertEqual(old_proxy._live, {})
 
     def test_turning_the_allowlist_back_on_rebinds(self):
         """The mode flip must reach the running proxy, not just the config."""

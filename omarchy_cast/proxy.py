@@ -112,9 +112,14 @@ class TcpProxy:
     def _allowed_locked(self, peer_ip):
         return self._allowed is None or peer_ip in self._allowed
 
-    def _is_allowed(self, peer_ip):
-        with self._lock:
-            return self._allowed_locked(peer_ip)
+    def _admitted_locked(self, peer_ip):
+        """May a connection from ``peer_ip`` be forwarded right now?
+
+        Not once the proxy has been stopped, whatever its allowlist says: a
+        stopped proxy has been replaced, and the one replacing it may filter
+        on a list this one never had.
+        """
+        return self._running and self._allowed_locked(peer_ip)
 
     def _forward(self, src, dst):
         try:
@@ -133,7 +138,9 @@ class TcpProxy:
 
     def _handle(self, client, addr):
         peer_ip = addr[0]
-        if not self._is_allowed(peer_ip):
+        with self._lock:
+            admitted = self._admitted_locked(peer_ip)
+        if not admitted:
             client.close()
             return
         try:
@@ -149,9 +156,12 @@ class TcpProxy:
         client.settimeout(None)
         backend.settimeout(None)
         with self._lock:
-            # Re-checked under the lock: the allowlist may have been replaced
-            # while we were dialing the backend.
-            still_allowed = self._allowed_locked(peer_ip)
+            # Re-checked under the lock that ``stop`` and ``set_allowed`` take
+            # too: while we were dialing, the allowlist may have been narrowed
+            # or the proxy stopped. Registering regardless would put this
+            # connection where neither ``drop_disallowed`` nor ``stop`` -- both
+            # of which already took their snapshot -- would ever shut it down.
+            still_allowed = self._admitted_locked(peer_ip)
             if still_allowed:
                 self._live[client] = (peer_ip, backend)
         if not still_allowed:
@@ -186,12 +196,17 @@ class TcpProxy:
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind((self.listen_host, self.listen_port))
         self._server.listen(16)
-        self._running = True
+        with self._lock:
+            self._running = True
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._accept_thread.start()
 
     def stop(self):
-        self._running = False
+        # Under the lock, so that from here on no handler can register: each
+        # connection either registered before this, and is in the snapshot
+        # taken below, or sees the flag and is refused.
+        with self._lock:
+            self._running = False
         if self._server is not None:
             _shutdown(self._server)
             if self._accept_thread is not None:
