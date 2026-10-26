@@ -15,6 +15,8 @@ import socket
 import sys
 import tempfile
 import threading
+import time
+import types
 import unittest
 from pathlib import Path
 
@@ -22,8 +24,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 CONFIG_DIR = tempfile.mkdtemp(prefix="omarchy-cast-test-")
 os.environ["OMARCHY_CAST_CONFIG_DIR"] = CONFIG_DIR
+os.environ["OMARCHY_CAST_STATE_DIR"] = CONFIG_DIR
 
-from omarchy_cast import config, proxy, receiver  # noqa: E402
+from omarchy_cast import (  # noqa: E402
+    __version__,
+    cli,
+    config,
+    proxy,
+    receiver,
+    service,
+    state,
+    util,
+)
 
 
 def tearDownModule():
@@ -364,6 +376,201 @@ class ReceiverReloadTests(unittest.TestCase):
         rcv.load_settings()
         self.assertEqual(rcv.port, 9999)
         self.assertEqual(rcv.name, "fixed")
+
+
+class ReceiverStateTests(unittest.TestCase):
+    """The CLI must know which build is running before it promises anything."""
+
+    def setUp(self):
+        state.clear()
+
+    tearDown = setUp
+
+    def test_round_trip(self):
+        state.write(4713, "specific", ["10.0.0.5"])
+        live = state.read()
+        self.assertEqual(live["version"], __version__)
+        self.assertEqual(live["allowed_ips"], ["10.0.0.5"])
+        self.assertEqual(live["pid"], os.getpid())
+        self.assertTrue(state.is_current(live))
+
+    def test_no_state_means_nothing_is_running(self):
+        self.assertIsNone(state.read())
+        self.assertFalse(state.is_current(None))
+
+    def test_stale_state_is_ignored(self):
+        state.write(4713, "specific", [])
+        data = json.loads(Path(state.path()).read_text())
+        data["updated"] = time.time() - (state.STALE_AFTER + 1)
+        Path(state.path()).write_text(json.dumps(data))
+        self.assertIsNone(state.read())
+
+    def test_unreadable_state_is_ignored(self):
+        Path(state.path()).write_text("{ not json")
+        self.assertIsNone(state.read())
+
+    def test_another_build_is_not_current(self):
+        state.write(4713, "specific", [])
+        data = json.loads(Path(state.path()).read_text())
+        data["version"] = "0.9.0"
+        Path(state.path()).write_text(json.dumps(data))
+        live = state.read()
+        self.assertIsNotNone(live)
+        self.assertFalse(state.is_current(live))
+
+    def test_receiver_publishes_what_it_enforces(self):
+        config.save(dict(config.DEFAULTS, display_name="box", allowed_ips=["10.0.0.5"]))
+        self.addCleanup(Path(config.CONFIG_PATH).unlink, True)
+        receiver.Receiver().publish_state()
+        live = state.read()
+        self.assertEqual(live["allowed_ips"], ["10.0.0.5"])
+        self.assertEqual(live["allow_mode"], "specific")
+
+
+class ApplyNoteTests(unittest.TestCase):
+    """'allow add/remove' may only claim a live apply when it is true.
+
+    Reinstalling used to leave an older receiver running with the allowlist it
+    had cached, so the note had to stop assuming the running process is this
+    build.
+    """
+
+    def setUp(self):
+        state.clear()
+        self.addCleanup(state.clear)
+        self.active = True
+        self.real_is_active = service.is_active
+        service.is_active = lambda: self.active
+        self.addCleanup(lambda: setattr(service, "is_active", self.real_is_active))
+
+    def note(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            cli._apply_note()
+        return out.getvalue(), err.getvalue()
+
+    def test_this_build_applies_live(self):
+        state.write(4713, "specific", [])
+        out, err = self.note()
+        self.assertIn("applies this within", out)
+        self.assertEqual(err, "")
+
+    def test_older_build_gets_a_restart_warning(self):
+        state.write(4713, "specific", [])
+        data = json.loads(Path(state.path()).read_text())
+        data["version"] = "0.9.0"
+        Path(state.path()).write_text(json.dumps(data))
+        out, err = self.note()
+        self.assertEqual(out, "")
+        self.assertIn("version 0.9.0", err)
+        self.assertIn("does NOT reach it", err)
+        self.assertIn("stop-receiver", err)
+
+    def test_active_without_state_gets_a_restart_warning(self):
+        out, err = self.note()
+        self.assertEqual(out, "")
+        self.assertIn("older build", err)
+        self.assertIn("stop-receiver", err)
+
+    def test_nothing_running_says_nothing(self):
+        self.active = False
+        self.assertEqual(self.note(), ("", ""))
+
+    def test_no_systemd_says_nothing(self):
+        def boom():
+            raise util.CommandError(["systemctl"], 127, "systemctl: not found")
+
+        service.is_active = boom
+        self.assertEqual(self.note(), ("", ""))
+
+
+class AllowListReportTests(unittest.TestCase):
+    """'allow list --json' has to say whether the receiver has applied this.
+
+    The bar panel and the GTK window read it, and that is where a user removes
+    a host -- so a stale receiver must be visible there, not only in the CLI.
+    """
+
+    def setUp(self):
+        Path(config.CONFIG_PATH).unlink(missing_ok=True)
+        state.clear()
+        self.addCleanup(state.clear)
+        self.addCleanup(Path(config.CONFIG_PATH).unlink, True)
+        self.active = True
+        real = service.is_active
+        service.is_active = lambda: self.active
+        self.addCleanup(lambda: setattr(service, "is_active", real))
+
+    def report(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            cli.main(["allow", "list", "--json"])
+        return json.loads(out.getvalue())
+
+    def test_this_build_is_not_stale(self):
+        config.allow_add("10.0.0.5")
+        state.write(4713, "specific", ["10.0.0.5"])
+        data = self.report()
+        self.assertFalse(data["stale"])
+        self.assertTrue(data["live"]["current"])
+        self.assertEqual(data["ips"], ["10.0.0.5"])
+
+    def test_older_receiver_is_reported_as_stale(self):
+        config.allow_add("10.0.0.5")
+        state.write(4713, "specific", [])
+        raw = json.loads(Path(state.path()).read_text())
+        raw["version"] = "0.9.0"
+        Path(state.path()).write_text(json.dumps(raw))
+        data = self.report()
+        self.assertTrue(data["stale"])
+        self.assertFalse(data["live"]["current"])
+        # the list the user sees vs. the list in force
+        self.assertEqual(data["ips"], ["10.0.0.5"])
+        self.assertEqual(data["live"]["ips"], [])
+
+    def test_active_receiver_without_state_is_stale(self):
+        data = self.report()
+        self.assertTrue(data["stale"])
+        self.assertIsNone(data["live"])
+
+    def test_nothing_running_is_not_stale(self):
+        self.active = False
+        self.assertFalse(self.report()["stale"])
+
+
+class InstallRestartTests(unittest.TestCase):
+    """Reinstalling has to replace a receiver that is already running."""
+
+    def setUp(self):
+        self.calls = []
+        real = service.systemctl
+        self.addCleanup(lambda: setattr(service, "systemctl", real))
+
+        def fake(*args, check=False):
+            self.calls.append(args)
+            return types.SimpleNamespace(stdout=self.state_of(args), returncode=0)
+
+        service.systemctl = fake
+
+    def state_of(self, args):
+        return self.unit_state if args and args[0] == "is-active" else ""
+
+    def test_a_running_receiver_is_restarted(self):
+        self.unit_state = "active\n"
+        self.assertTrue(service.refresh_running_receiver())
+        self.assertIn(("restart", service.UNIT_NAME), self.calls)
+
+    def test_a_stopped_receiver_is_left_alone(self):
+        self.unit_state = "inactive\n"
+        self.assertFalse(service.refresh_running_receiver())
+        self.assertNotIn(("restart", service.UNIT_NAME), self.calls)
+
+    def test_no_systemd_is_not_an_error(self):
+        def boom(*args, check=False):
+            raise util.CommandError(["systemctl"], 127, "systemctl: not found")
+
+        service.systemctl = boom
+        self.assertFalse(service.refresh_running_receiver())
 
 
 if __name__ == "__main__":

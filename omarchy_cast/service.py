@@ -64,6 +64,10 @@ def stop():
     systemctl("stop", UNIT_NAME, check=True)
 
 
+def restart():
+    systemctl("restart", UNIT_NAME, check=True)
+
+
 def enable(now=True):
     systemctl("enable", *(["--now"] if now else []), UNIT_NAME, check=True)
 
@@ -84,6 +88,23 @@ def _copy_package():
     )
 
 
+def refresh_running_receiver():
+    """Restart the receiver if one is running, so it runs the code just installed.
+
+    A receiver that was already running is the *old* code, holding the
+    allowlist it read at startup: ``enable --now`` would not touch it, and it
+    would go on accepting hosts that this build has been told to refuse.
+    Returns True when a running receiver was replaced.
+    """
+    try:
+        if not is_active():
+            return False
+    except util.CommandError:
+        return False  # no systemd here; nothing is running to replace
+    restart()
+    return True
+
+
 def install(enable_now=False):
     APP_HOME.mkdir(parents=True, exist_ok=True)
     (Path.home() / ".local" / "bin").mkdir(parents=True, exist_ok=True)
@@ -97,6 +118,7 @@ def install(enable_now=False):
     DESKTOP_PATH.write_text(DESKTOP.format(name=APP_NAME, bin_path=str(BIN_PATH)))
 
     systemctl("daemon-reload")
+    restarted = refresh_running_receiver()
     if enable_now:
         enable(now=True)
     return {
@@ -104,6 +126,7 @@ def install(enable_now=False):
         "bin": str(BIN_PATH),
         "unit": str(UNIT_PATH),
         "desktop": str(DESKTOP_PATH),
+        "restarted": restarted,
     }
 
 
@@ -127,6 +150,8 @@ def main_install(argv):
     print(f"launcher: {info['bin']}")
     print(f"service:  {info['unit']}")
     print(f"desktop:  {info['desktop']}")
+    if info["restarted"]:
+        print("restarted the running receiver, so it enforces this version")
     if not enable_now:
         print("\nRun 'omarchy-cast enable-receiver' to receive audio on this host.")
     if not util.have("avahi-publish-service"):
