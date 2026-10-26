@@ -23,7 +23,7 @@ Panel {
   property bool cliMissing: false
   property string status: ""
 
-  property string allowMode: "all"
+  property string allowMode: "specific"
   property var allowedIps: []
   property bool allowBusy: false
 
@@ -167,7 +167,7 @@ Panel {
       onStreamFinished: function(text) {
         var data = {}
         try { data = JSON.parse(String(text)) } catch (e) { data = {} }
-        root.allowMode = data.mode || "all"
+        root.allowMode = data.mode === "all" ? "all" : "specific"
         root.allowedIps = data.ips || []
       }
     }
@@ -307,6 +307,22 @@ Panel {
             foreground: root.contentForeground
             onToggled: root.setAllowMode(root.allowMode === "specific" ? "all" : "specific")
           }
+        }
+
+        // Say what the current allowlist state means for incoming audio: a
+        // fresh install allows nobody until the user picks a host.
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          visible: text.length > 0
+          text: root.allowMode === "specific"
+            ? (root.allowedIps.length === 0
+                ? "No host is allowed yet, so every incoming connection is refused. Use the allow button next to a host to let it cast here."
+                : "")
+            : "Any host that can reach this machine may cast audio to it."
+          color: Qt.darker(root.contentForeground, 1.6)
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.bodySmall
         }
 
         Rectangle {

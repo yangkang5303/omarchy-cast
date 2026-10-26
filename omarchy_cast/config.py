@@ -14,7 +14,7 @@ DEFAULTS = {
     "port": DEFAULT_PORT,
     "auth": "anonymous",
     "listen": "",
-    "allow_mode": "all",
+    "allow_mode": "specific",
     "allowed_ips": [],
     "internal_port": 0,
     "set_default": True,
@@ -26,6 +26,16 @@ def _hostname():
     return os.uname().nodename
 
 
+def normalize_allow_mode(value):
+    """Return a valid allow mode, falling back to the restrictive one.
+
+    Anything that is not exactly ``"all"`` -- a missing key, a typo, a value
+    left over from an older release -- resolves to ``"specific"``, so a config
+    we cannot make sense of never opens the receiver to every host.
+    """
+    return "all" if value == "all" else "specific"
+
+
 def load():
     cfg = dict(DEFAULTS)
     try:
@@ -35,6 +45,7 @@ def load():
         pass
     if not cfg.get("display_name"):
         cfg["display_name"] = _hostname()
+    cfg["allow_mode"] = normalize_allow_mode(cfg.get("allow_mode"))
     return cfg
 
 
@@ -47,6 +58,8 @@ def set_value(key, value):
     cfg = load()
     if key not in DEFAULTS:
         raise KeyError(key)
+    if key == "allow_mode" and value not in ("all", "specific"):
+        raise ValueError("allow_mode must be 'specific' or 'all'")
     default = DEFAULTS[key]
     if default is None:
         cfg[key] = value
@@ -70,8 +83,8 @@ def _parse_list(value):
 
 
 def allow_mode():
-    """Return the current allow mode: 'all' or 'specific'."""
-    return load().get("allow_mode", "all")
+    """Return the current allow mode: 'specific' (the default) or 'all'."""
+    return load()["allow_mode"]
 
 
 def allowed_ips():
@@ -80,10 +93,21 @@ def allowed_ips():
 
 
 def set_allow_mode(mode):
-    """Set allow mode to 'all' (any reachable client) or 'specific' (allowlist)."""
-    if mode not in ("all", "specific"):
-        raise ValueError("allow mode must be 'all' or 'specific'")
+    """Set allow mode to 'specific' (allowlist, the default) or 'all'."""
     return set_value("allow_mode", mode)
+
+
+def accepts_nothing(cfg=None):
+    """True when the receiver is restricted but no host has been allowed yet.
+
+    In that state the receiver runs and advertises itself, but every incoming
+    connection is refused -- which is what a fresh install looks like until the
+    user picks the hosts they trust.
+    """
+    cfg = load() if cfg is None else cfg
+    return normalize_allow_mode(cfg.get("allow_mode")) == "specific" and not cfg.get(
+        "allowed_ips"
+    )
 
 
 def allow_add(ip):

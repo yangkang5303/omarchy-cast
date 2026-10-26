@@ -16,7 +16,7 @@ class Receiver:
         self.name = name or cfg["display_name"]
         self.auth = cfg.get("auth", "anonymous")
         self.listen = (cfg.get("listen") or "").strip()
-        self.allow_mode = cfg.get("allow_mode", "all")
+        self.allow_mode = config.normalize_allow_mode(cfg.get("allow_mode"))
         self.allowed_ips = list(cfg.get("allowed_ips", []))
         self.internal_port = int(cfg.get("internal_port") or 0) or (self.port + 1)
         self.module_id = None
@@ -86,32 +86,48 @@ class Receiver:
         self.load_module()
         self.start_proxy()
         self.start_publisher()
+        where = self.listen or "all interfaces"
         if self.allow_mode == "specific":
-            where = self.listen or "all interfaces"
             print(
                 f"[omarchy-cast] receiving on {where}:{self.port} as '{self.name}' "
-                f"(auth={self.auth}, allowlist={len(self.allowed_ips)} IP(s))",
+                f"(auth={self.auth}, allowed hosts: {len(self.allowed_ips)})",
                 flush=True,
             )
+            for ip in self.allowed_ips:
+                print(f"[omarchy-cast]   allowed: {ip}", flush=True)
             if not self.allowed_ips:
                 print(
-                    "[omarchy-cast] warning: allowlist is empty; no client can connect. "
-                    "Add IPs with 'omarchy-cast allow add <ip>'.",
+                    "[omarchy-cast] no host is allowed yet, so every incoming "
+                    "connection is refused. Allow the hosts you trust with "
+                    "'omarchy-cast allow add <ip>', or from the host list in the "
+                    "panel.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif self.auth == "anonymous":
+                print(
+                    "[omarchy-cast] note: allowed hosts are identified by source IP "
+                    "only (auth=anonymous). Use cookie auth if you need more than "
+                    "that.",
                     file=sys.stderr,
                     flush=True,
                 )
         else:
-            where = self.listen or "all interfaces"
             print(
                 f"[omarchy-cast] receiving on {where}:{self.port} as '{self.name}' "
-                f"(auth={self.auth})",
+                f"(auth={self.auth}, allow_mode=all)",
                 flush=True,
             )
-        if self.auth == "anonymous":
             print(
-                "[omarchy-cast] warning: anonymous auth grants unrestricted access to "
-                "any client that can reach the listener. Set 'listen' to a LAN address, "
-                "restrict the port with a firewall, or use cookie auth.",
+                "[omarchy-cast] warning: allow_mode is 'all', so every client that "
+                "can reach the listener may cast to this host"
+                + (
+                    " with unrestricted access to the audio server"
+                    if self.auth == "anonymous"
+                    else ""
+                )
+                + ". Restrict it again with 'omarchy-cast allow mode specific', set "
+                "'listen' to a LAN address, or restrict the port with a firewall.",
                 file=sys.stderr,
                 flush=True,
             )

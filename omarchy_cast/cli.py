@@ -85,10 +85,14 @@ def cmd_disconnect(args):
 def cmd_status(args):
     cfg = config.load()
     connected = pulse.tunnel_sinks()
+    allowed = list(cfg.get("allowed_ips", []))
     print(f"this host      : {cfg['display_name']}")
     print(f"receiver port  : {cfg['port']}")
     print(f"receiver active: {'yes' if service.is_active() else 'no'}")
     print(f"receiver boot  : {'enabled' if service.is_enabled() else 'disabled'}")
+    print(f"allow mode     : {cfg['allow_mode']}")
+    if cfg["allow_mode"] == "specific":
+        print(f"allowed hosts  : {', '.join(allowed) if allowed else 'none (all refused)'}")
     print(f"default sink   : {pulse.default_sink() or '-'}")
     print("tunnel sinks   :")
     if connected:
@@ -107,6 +111,12 @@ def cmd_service(action):
     def inner(args):
         getattr(service, action)()
         print(f"receiver {action}")
+        if action in ("start", "enable") and config.accepts_nothing():
+            print(
+                "note: no host is allowed yet, so the receiver refuses every "
+                "connection. Allow a host with 'omarchy-cast allow add <ip>'.",
+                file=sys.stderr,
+            )
         return 0
 
     return inner
@@ -121,6 +131,9 @@ def cmd_config(args):
         except KeyError:
             print(f"unknown key: {key}", file=sys.stderr)
             return 2
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     print(json.dumps(cfg, indent=2))
     return 0
 
@@ -128,7 +141,7 @@ def cmd_config(args):
 def cmd_allow_list(args):
     cfg = config.load()
     data = {
-        "mode": cfg.get("allow_mode", "all"),
+        "mode": cfg["allow_mode"],
         "ips": list(cfg.get("allowed_ips", [])),
     }
     if args.json:
@@ -138,9 +151,24 @@ def cmd_allow_list(args):
     if data["ips"]:
         for ip in data["ips"]:
             print(f"  - {ip}")
+    elif data["mode"] == "specific":
+        print("  (no allowed IPs: every incoming connection is refused)")
     else:
-        print("  (no allowed IPs)")
+        print("  (no allowed IPs; mode is 'all', so any reachable host may cast)")
     return 0
+
+
+def _restart_hint():
+    """Allowlist changes are read when the receiver starts, so say so."""
+    try:
+        active = service.is_active()
+    except util.CommandError:
+        return  # no systemctl: the allowlist change still stands
+    if active:
+        print(
+            "restart the receiver to apply: "
+            "omarchy-cast stop-receiver && omarchy-cast start-receiver"
+        )
 
 
 def cmd_allow_add(args):
@@ -150,12 +178,16 @@ def cmd_allow_add(args):
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"added {args.ip}" if added else f"{args.ip} already allowed")
+    if added:
+        _restart_hint()
     return 0
 
 
 def cmd_allow_remove(args):
     removed = config.allow_remove(args.ip)
     print(f"removed {args.ip}" if removed else f"{args.ip} not in allowlist")
+    if removed:
+        _restart_hint()
     return 0
 
 
@@ -166,6 +198,16 @@ def cmd_allow_mode(args):
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"allow mode set to {args.mode}")
+    if args.mode == "all":
+        print(
+            "warning: any host that can reach the receiver port may now cast to "
+            "this machine. Restrict it again with "
+            "'omarchy-cast allow mode specific'.",
+            file=sys.stderr,
+        )
+    elif config.accepts_nothing():
+        print("no host is allowed yet; add one with 'omarchy-cast allow add <ip>'")
+    _restart_hint()
     return 0
 
 
@@ -241,8 +283,10 @@ def build_parser():
     p.add_argument("ip")
     p.set_defaults(func=cmd_allow_remove)
 
-    p = allow_sub.add_parser("mode", help="set allow mode: 'all' or 'specific'")
-    p.add_argument("mode", choices=("all", "specific"))
+    p = allow_sub.add_parser(
+        "mode", help="set allow mode: 'specific' (default) or 'all'"
+    )
+    p.add_argument("mode", choices=("specific", "all"))
     p.set_defaults(func=cmd_allow_mode)
 
     p = sub.add_parser("gui", help="launch the graphical interface")

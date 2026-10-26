@@ -112,20 +112,39 @@ class CastWindow(Gtk.ApplicationWindow):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         row.append(Gtk.Label(label="Restrict to allowed hosts", xalign=0, hexpand=True))
         self.allow_switch = Gtk.Switch()
-        self.allow_switch.set_active(self.cfg.get("allow_mode", "all") == "specific")
+        self.allow_switch.set_active(self.cfg["allow_mode"] == "specific")
         self.allow_switch.set_valign(Gtk.Align.CENTER)
         self.allow_switch.connect("state-set", self._on_allow_toggle)
         row.append(self.allow_switch)
         box.append(row)
 
-        hint = Gtk.Label(
-            label="When enabled, only hosts you add to the allowlist may cast audio to this host.",
+        self.allow_hint = Gtk.Label(
             xalign=0,
             wrap=True,
             css_classes=["dim-label"],
         )
-        box.append(hint)
+        box.append(self.allow_hint)
+        self._update_allow_hint()
         return frame
+
+    def _update_allow_hint(self):
+        """Spell out what the current allowlist state means for incoming audio."""
+        if self.cfg["allow_mode"] != "specific":
+            self.allow_hint.set_text(
+                "Any host that can reach this machine may cast audio to it. "
+                "Turn this on to accept only the hosts you pick."
+            )
+            return
+        count = len(self.cfg.get("allowed_ips", []))
+        if count:
+            self.allow_hint.set_text(
+                f"Only the {count} allowed host(s) may cast audio to this machine."
+            )
+        else:
+            self.allow_hint.set_text(
+                "No host is allowed yet, so every incoming connection is refused. "
+                'Pick the hosts you trust with "Add to allow" below.'
+            )
 
     def _is_allowed(self, ip):
         return ip in list(self.cfg.get("allowed_ips", []))
@@ -163,7 +182,8 @@ class CastWindow(Gtk.ApplicationWindow):
             self._set_status(f"Error: {error}")
         else:
             self.cfg = config.load()
-            self.allow_switch.set_active(self.cfg.get("allow_mode", "all") == "specific")
+            self.allow_switch.set_active(self.cfg["allow_mode"] == "specific")
+            self._update_allow_hint()
             self._populate(pulse.tunnel_sinks())
             self._set_status("Allowlist updated")
         return False
@@ -229,6 +249,7 @@ class CastWindow(Gtk.ApplicationWindow):
             self._set_status(f"Scan failed: {error}")
             return False
         self.hosts, connected, self.cfg = result
+        self._update_allow_hint()
         self._populate(connected)
         if self.hosts:
             self._set_status(f"Found {len(self.hosts)} host(s)")
