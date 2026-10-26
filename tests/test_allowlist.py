@@ -38,6 +38,21 @@ from omarchy_cast import (  # noqa: E402
 )
 
 
+def setUpModule():
+    """Fail loudly rather than advertise a test receiver on the LAN.
+
+    discovery.publish spawns avahi-publish-service, which outlives the test
+    that started it. Any test reaching it has not been isolated.
+    """
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(
+            "a test tried to advertise on the LAN; pass the receiver "
+            "through isolate() first"
+        )
+
+    receiver.discovery.publish = refuse
+
+
 def tearDownModule():
     shutil.rmtree(CONFIG_DIR, ignore_errors=True)
 
@@ -123,10 +138,19 @@ def unix_echo_server(test):
     return server
 
 
-def no_pactl(test, rcv):
-    """Keep a receiver under test away from the machine's real audio server."""
+def isolate(test, rcv):
+    """Keep a receiver under test off the machine it is running on.
+
+    Everything here reaches outside the process: ``clear_modules`` drives
+    pactl against the real audio server, and ``start_publisher`` spawns an
+    avahi-publish-service that advertises the test's name and port on the
+    LAN and outlives the test -- other hosts then list a receiver that is
+    not there and cannot be cast to. A rebuild happens on any listener
+    change, so these cannot be stubbed per test and remembered case by case.
+    """
     rcv.clear_modules = lambda: None
-    rcv.unload_module = lambda: None
+    rcv.start_publisher = lambda: None
+    rcv.stop_publisher = lambda: None
 
 
 class AllowModeDefaultTests(unittest.TestCase):
@@ -454,7 +478,7 @@ class ReceiverReloadTests(unittest.TestCase):
         cfg.update(patch)
         config.save(cfg)
         rcv = receiver.Receiver()
-        no_pactl(self, rcv)
+        isolate(self, rcv)
         rcv.start_proxy()
         self.addCleanup(rcv.stop_proxy)
         return rcv, port
@@ -503,7 +527,6 @@ class ReceiverReloadTests(unittest.TestCase):
         rcv, port = self.start_receiver()
         rebuilt = []
         rcv.start_publisher = lambda: rebuilt.append("publisher")
-        rcv.stop_publisher = lambda: None
         config.set_allow_mode("all")
         self.assertTrue(rcv.reload())
         self.assertEqual(rebuilt, ["publisher"])
@@ -516,8 +539,6 @@ class ReceiverReloadTests(unittest.TestCase):
     def test_turning_the_allowlist_back_on_rebinds(self):
         """The mode flip must reach the running proxy, not just the config."""
         rcv, port = self.start_receiver(allow_mode="all")
-        rcv.start_publisher = lambda: None
-        rcv.stop_publisher = lambda: None
         self.assertIsNone(rcv.proxy.allowed)
         config.set_allow_mode("specific")
         config.set_value("allowed_ips", [])
@@ -554,7 +575,6 @@ class ReceiverReloadTests(unittest.TestCase):
         rcv.stop_proxy()  # a reload that failed part way through
         rebuilt = []
         rcv.start_publisher = lambda: rebuilt.append("publisher")
-        rcv.stop_publisher = lambda: None
         self.assertTrue(rcv.reload())
         self.assertEqual(rebuilt, ["publisher"])
         self.assertIsNotNone(rcv.proxy)
